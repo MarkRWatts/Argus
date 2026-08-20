@@ -9,11 +9,21 @@ struct OrbitView: View {
     let nodes: [OrbitNode]
     let riskLevel: Severity
     let reduceMotion: Bool
+    @Environment(\.controlActiveState) private var activeState
 
     private let lifespan: Double = 14
 
+    /// Full ~15fps while the window is frontmost; a much lazier tick while
+    /// backgrounded (the common state for an overnight-unattended monitor) —
+    /// state keeps updating, it just isn't spending CPU animating pixels
+    /// nobody is watching.
+    private var frameInterval: Double {
+        if reduceMotion { return 0.5 }
+        return activeState == .key ? 1.0 / 15.0 : 1.5
+    }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: reduceMotion ? 0.5 : 1.0 / 30.0)) { timeline in
+        TimelineView(.animation(minimumInterval: frameInterval)) { timeline in
             Canvas { context, size in
                 let center = CGPoint(x: size.width / 2, y: size.height / 2)
                 let maxRadius = min(size.width, size.height) / 2 * 0.92
