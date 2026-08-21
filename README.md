@@ -102,7 +102,7 @@ When distinct techniques fire in the same process tree within a rolling
 10-minute window, Argus emits a synthetic "Suspicious sequence" event. Its
 severity is escalated one level above the members' maximum (capped at
 critical), and the event lists the member processes and rules. This is the
-signal the README's own thesis calls out: a single LOLBin invocation is often
+signal the "Why this, specifically" section calls out: a single LOLBin invocation is often
 unremarkable, but two or more different techniques firing inside the same
 process tree is a much stronger indicator. Same-rule refires, same-pid
 multi-rule matches, and process trees related only through launchd don't
@@ -125,8 +125,8 @@ process.
 The app records HMAC-SHA256 MACs of `rules-state.json` and `allowlist.json`
 on every authenticated write into a sidecar `integrity.json` file. The signing
 key is stored in the login Keychain (service "Argus", account
-"integrity-key") rather than on disk, so an attacker who can rewrite the
-guarded files in place has no reason to also have Keychain access. At
+"integrity-key") rather than on disk, so rewriting the
+guarded files in place is not by itself enough to also fix up their MACs. At
 launch, any mismatch between a file's current contents and its recorded MAC
 is surfaced as a critical "Detection state modified outside Argus" event (T1562.001),
 so the tamper itself becomes visible in the feed. This is evidence, not prevention — a same-user attacker can still rewrite the files, but no longer
@@ -151,7 +151,7 @@ vectors), and `cased` modifiers for case-sensitive comparison. Keyword
 selections (those with no field name) match against all record fields per
 spec, not just CommandLine. Rules whose `logsource` is incompatible
 (something other than `process_creation`/`macos` or portable Linux techniques)
-are silently skipped at load time; a count is shown in the rule browser
+are skipped at load time; a count is shown in the rule browser
 alongside the rule count in the header.
 
 **85 rules ship with the app**, sourced from three places:
@@ -268,9 +268,8 @@ Sources/Argus/
     SigmaCondition.swift           condition-language parser/evaluator (N of, all of)
     SigmaMatcher.swift             field/selection matching (base64, base64offset, cased)
     RuleStore.swift                loads bundled + user rules, enable/disable, skip count
-  ProcessMonitor.swift          ps polling, diffing, risk-score decay, Sigma matching
-  ParentContextCache.swift      cross-tick parent lineage resolution
-  SamplingHealthTracker.swift   monitors consecutive failures, degraded state
+  ProcessMonitor.swift          ps polling, diffing, risk-score decay, Sigma matching,
+                                  cross-tick parent cache, sampling watchdog
   ChainCorrelator.swift         correlates techniques in same process tree (10-min window)
   PersistenceWatcher.swift      event-driven monitoring of LaunchAgents/Daemons/periodic
   IntegrityGuard.swift          HMAC verification of rules-state.json and allowlist.json
