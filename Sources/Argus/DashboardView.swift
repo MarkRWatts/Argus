@@ -1,4 +1,5 @@
 import SwiftUI
+import ServiceManagement
 
 struct DashboardView: View {
     @ObservedObject var monitor: ProcessMonitor
@@ -58,6 +59,9 @@ struct DashboardView: View {
             }
             Spacer()
             HStack(spacing: 10) {
+                if monitor.isDegraded {
+                    degradedBadge
+                }
                 statField(label: "PROCESSES SEEN", value: "\(monitor.totalSeen)")
                 statField(label: "SAMPLES", value: "\(monitor.sampleCount)")
 
@@ -129,6 +133,30 @@ struct DashboardView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+    }
+
+    /// Shown in the header only while `ProcessMonitor.isDegraded` is true —
+    /// i.e. `ps` sampling has failed repeatedly and the process table view
+    /// is stale. A hung/missing sampler must not look identical to "nothing
+    /// suspicious happening", so this sits right next to the stats it would
+    /// otherwise silently undermine.
+    private var degradedBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+            Text("MONITOR DEGRADED")
+                .font(.system(size: 9, weight: .bold))
+                .tracking(1)
+        }
+        .foregroundStyle(Theme.color(for: .elevated))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Theme.color(for: .elevated).opacity(0.12))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.color(for: .elevated).opacity(0.4), lineWidth: 1))
+        )
+        .help("Process sampling has failed repeatedly — the data shown here may be stale.")
     }
 
     /// Same shape as `statField`, but visibly a control: bordered chip, a
@@ -882,6 +910,7 @@ struct HistoryPanel: View {
 /// rather than fixed in code.
 struct SettingsPanel: View {
     @ObservedObject var settings: AppSettings
+    @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -943,10 +972,51 @@ struct SettingsPanel: View {
                     }
                 }
             }
+
+            Divider().background(Theme.border)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: launchAtLoginBinding) {
+                    Text("Launch at login")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.text)
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+                Text("A monitor only protects you while it's running — enable this so Argus starts watching as soon as you log in.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
         }
         .padding(14)
         .frame(width: 300)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
+    }
+
+    /// `SMAppService` is the source of truth for launch-at-login state —
+    /// it's deliberately not mirrored into `AppSettings`/UserDefaults, so
+    /// there's nothing that can drift out of sync with it. Registration is
+    /// best-effort: on failure (including the expected case of an
+    /// un-bundled `swift test`/debug run, where `SMAppService` has no real
+    /// app bundle to register) we log via `DiagnosticsLog` and snap the
+    /// toggle back to the prior state rather than crash or claim success.
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchAtLoginEnabled },
+            set: { newValue in
+                launchAtLoginEnabled = newValue
+                do {
+                    if newValue {
+                        try SMAppService.mainApp.register()
+                    } else {
+                        try SMAppService.mainApp.unregister()
+                    }
+                } catch {
+                    DiagnosticsLog.write("launch-at-login \(newValue ? "register" : "unregister") failed: \(error.localizedDescription)")
+                    launchAtLoginEnabled = !newValue
+                }
+            }
+        )
     }
 }

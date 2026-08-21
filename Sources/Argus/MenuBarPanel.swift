@@ -21,6 +21,17 @@ struct MenuBarPanel: View {
                     .foregroundStyle(Theme.color(for: monitor.riskLevel))
             }
 
+            if monitor.isDegraded {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text("Monitor degraded — process sampling is failing")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.color(for: .elevated))
+            }
+
             GaugeView(score: monitor.riskScore, level: monitor.riskLevel)
                 .scaleEffect(0.7)
                 .frame(height: 90)
