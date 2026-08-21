@@ -24,6 +24,13 @@ struct SigmaFieldMatch {
     let field: String
     let modifiers: [String]
     let values: [String]
+    /// Regexes precompiled once at load time, aligned index-for-index with
+    /// `values`, and populated only when the `re` modifier is present. An
+    /// invalid pattern compiles to `nil` (that value simply never matches).
+    /// This avoids recompiling the pattern on every process sample —
+    /// matching runs against every new process every poll — and means a
+    /// malformed pattern fails once at load rather than silently per tick.
+    let regexes: [NSRegularExpression?]
 }
 
 enum SigmaSelectionItem {
@@ -140,7 +147,7 @@ struct SigmaRule: Identifiable {
     private static func parseSelection(_ value: YAMLValue) -> SigmaSelection {
         switch value {
         case .mapping(let pairs):
-            return SigmaSelection(items: [.fields(pairs.map(parseFieldMatch))])
+            return SigmaSelection(items: [.fields(pairs.compactMap(parseFieldMatch))])
         case .sequence(let items):
             let allScalar = items.allSatisfy { if case .scalar = $0 { return true }; return false }
             if allScalar {
@@ -155,7 +162,7 @@ struct SigmaRule: Identifiable {
     private static func parseSelectionItem(_ value: YAMLValue) -> SigmaSelectionItem {
         switch value {
         case .mapping(let pairs):
-            return .fields(pairs.map(parseFieldMatch))
+            return .fields(pairs.compactMap(parseFieldMatch))
         case .scalar(let s):
             return .keywords([s])
         case .sequence(let items):
@@ -163,8 +170,20 @@ struct SigmaRule: Identifiable {
         }
     }
 
-    private static func parseFieldMatch(_ pair: YAMLPair) -> SigmaFieldMatch {
+    /// Returns `nil` for a malformed key with no field name (empty, or made
+    /// up entirely of `|` separators) rather than trapping on `parts[0]`. A
+    /// hand-authored rule file with such a typo previously crashed the app at
+    /// launch — and rule files load on every launch — so a bad field is
+    /// dropped instead of allowed to abort the process.
+    private static func parseFieldMatch(_ pair: YAMLPair) -> SigmaFieldMatch? {
         let parts = pair.key.split(separator: "|").map(String.init)
-        return SigmaFieldMatch(field: parts[0], modifiers: Array(parts.dropFirst()), values: pair.value.stringList)
+        guard let field = parts.first else { return nil }
+        let modifiers = Array(parts.dropFirst())
+        let values = pair.value.stringList
+        let isRegex = modifiers.contains { $0.lowercased() == "re" }
+        let regexes: [NSRegularExpression?] = isRegex
+            ? values.map { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+            : []
+        return SigmaFieldMatch(field: field, modifiers: modifiers, values: values, regexes: regexes)
     }
 }

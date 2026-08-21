@@ -23,6 +23,10 @@ final class EventStore {
             let dir = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/Argus", isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // events.jsonl records full process command lines (which often
+            // carry secrets on argv). Keep the Argus support directory
+            // owner-only so no other local account can read the history.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
             self.fileURL = dir.appendingPathComponent("events.jsonl")
         }
         self.maxRetained = maxRetained
@@ -39,6 +43,7 @@ final class EventStore {
             try? handle.close()
         } else {
             try? entryData.write(to: fileURL)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         }
 
         appendsSinceTrim += 1
@@ -72,5 +77,8 @@ final class EventStore {
         }
         let content = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
         try? content.data(using: .utf8)?.write(to: fileURL, options: .atomic)
+        // An atomic write replaces the file with a fresh inode carrying
+        // default (umask) permissions, so re-assert owner-only here.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 }
