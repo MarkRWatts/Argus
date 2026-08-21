@@ -38,6 +38,10 @@ struct ArgusApp: App {
     /// alive — `PersistenceWatcher` isn't observed by any view, so nothing
     /// else in the view hierarchy retains it.
     private let persistenceWatcher: PersistenceWatcher
+    /// Held for the app's lifetime purely to keep its child `docker events`
+    /// process and retry timer alive — `DockerWatcher` isn't observed by any
+    /// view either, so nothing else in the view hierarchy retains it.
+    private let dockerWatcher: DockerWatcher
     /// Held for the app's lifetime purely to keep it alive — see its own
     /// doc comment. `UNUserNotificationCenter.delegate` is a weak reference,
     /// so nothing else retains this object.
@@ -89,6 +93,17 @@ struct ArgusApp: App {
         }
         watcher.start()
 
+        // Third, independent sensor: containers run inside Docker's Linux VM,
+        // so ProcessMonitor's host `ps` poll never sees anything running
+        // inside one. This subscribes to the Docker daemon's own event
+        // stream to surface container start/exec activity instead — inert
+        // and silent (beyond one log line) on machines without Docker.
+        let dockerEventWatcher = DockerWatcher()
+        dockerEventWatcher.onEvent = { [weak m] event in
+            m?.ingestExternal(event)
+        }
+        dockerEventWatcher.start()
+
         // Verify rules-state.json/allowlist.json against their last
         // authenticated-write MAC — asynchronously, off this init: the
         // Keychain key fetch can present a consent prompt (seen in practice
@@ -119,6 +134,7 @@ struct ArgusApp: App {
         _ruleStore = StateObject(wrappedValue: rules)
         eventStore = events
         persistenceWatcher = watcher
+        dockerWatcher = dockerEventWatcher
         notificationResponder = responder
     }
 
