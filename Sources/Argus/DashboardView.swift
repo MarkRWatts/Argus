@@ -6,6 +6,7 @@ struct DashboardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var uptimeStart = Date()
     @State private var showingAllowlist = false
+    @State private var showingRules = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,16 +49,28 @@ struct DashboardView: View {
                 }
             }
             Spacer()
-            HStack(spacing: 18) {
+            HStack(spacing: 10) {
                 statField(label: "PROCESSES SEEN", value: "\(monitor.totalSeen)")
                 statField(label: "SAMPLES", value: "\(monitor.sampleCount)")
-                statField(label: "RULES LOADED", value: "\(RuleEngine.catalog.count)")
+
+                Button {
+                    showingRules = true
+                } label: {
+                    interactiveStatField(label: "RULES LOADED", value: "\(RuleEngine.catalog.count)")
+                }
+                .buttonStyle(.plain)
+                .help("Browse the detection rule catalog")
+                .popover(isPresented: $showingRules, arrowEdge: .bottom) {
+                    RulesPanel()
+                }
+
                 Button {
                     showingAllowlist = true
                 } label: {
-                    statField(label: "ALLOWLISTED", value: "\(allowlist.entries.count)")
+                    interactiveStatField(label: "ALLOWLISTED", value: "\(allowlist.entries.count)")
                 }
                 .buttonStyle(.plain)
+                .help("Review or revoke allowlisted rules")
                 .popover(isPresented: $showingAllowlist, arrowEdge: .bottom) {
                     AllowlistPanel(allowlist: allowlist)
                 }
@@ -77,6 +90,35 @@ struct DashboardView: View {
                 .tracking(1)
                 .foregroundStyle(Theme.dim)
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    /// Same shape as `statField`, but visibly a control: bordered chip, a
+    /// chevron, and an accent-tinted value — so it doesn't blend into the
+    /// read-only stats sitting right next to it.
+    private func interactiveStatField(label: String, value: String) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack(spacing: 3) {
+                Text(value)
+                    .font(Theme.mono(15, weight: .semibold))
+                    .monospacedDigit()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+            }
+            .foregroundStyle(Theme.accent)
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(1)
+                .foregroundStyle(Theme.dim)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Theme.surfaceRaised)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.border, lineWidth: 1))
+        )
     }
 
     private var orbitCard: some View {
@@ -266,6 +308,55 @@ struct EventRow: View {
                 }
             }
         }
+    }
+}
+
+/// Popover from the header's "RULES LOADED" stat — the full detection
+/// catalog, in plain view. A security tool that flags your commands
+/// shouldn't also hide what it's checking them against.
+struct RulesPanel: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("DETECTION RULES")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.5)
+                .foregroundStyle(Theme.muted)
+            Text("Every newly-spawned process's full command line is checked against all \(RuleEngine.catalog.count) of these.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.dim)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(RuleEngine.catalog, id: \.name) { rule in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .top) {
+                                Text(rule.name)
+                                    .font(Theme.mono(11.5, weight: .semibold))
+                                    .foregroundStyle(Theme.text)
+                                Spacer(minLength: 8)
+                                Text(rule.severity.label)
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .tracking(0.5)
+                                    .foregroundStyle(Theme.color(for: rule.severity))
+                            }
+                            Text(rule.technique)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(Theme.accent)
+                            Text(rule.explanation)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Theme.muted)
+                        }
+                        .padding(.vertical, 9)
+                        Divider().background(Theme.border)
+                    }
+                }
+            }
+            .frame(height: 360)
+        }
+        .padding(14)
+        .frame(width: 340)
+        .background(Theme.bg)
+        .foregroundStyle(Theme.text)
     }
 }
 
