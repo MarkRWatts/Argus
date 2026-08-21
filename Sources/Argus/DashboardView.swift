@@ -798,8 +798,8 @@ struct AllowlistPanel: View {
     }
 }
 
-private @MainActor
-struct AllowlistRow: View {
+@MainActor
+private struct AllowlistRow: View {
     let entry: AllowlistEntry
     let dateFormatter: DateFormatter
     let onRemove: (@escaping (Bool) -> Void) -> Void
