@@ -52,6 +52,45 @@ final class AllowlistStore: ObservableObject {
         save()
     }
 
+    /// Adding or removing an allowlist entry silences (or restores) alerts
+    /// for a (rule, executable) pair — the same kind of silent-blinding risk
+    /// as disabling a rule outright, so it goes through the same Touch
+    /// ID/password gate as `RuleStore.requestToggle`, with every attempt
+    /// logged regardless of outcome.
+    func requestAllow(ruleName: String, executable: String, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard !isAllowed(ruleName: ruleName, executable: executable) else {
+            completion(true)
+            return
+        }
+        RuleAuthenticator.authenticate(reason: "Authenticate to allowlist \u{201c}\(ruleName)\u{201d} alerts from \(executable).") { [weak self] granted in
+            guard let self else { return }
+            if granted {
+                self.allow(ruleName: ruleName, executable: executable)
+                DiagnosticsLog.write("allowlist added: \(ruleName) / \(executable)")
+            } else {
+                DiagnosticsLog.write("allowlist add denied (authentication failed): \(ruleName) / \(executable)")
+            }
+            completion(granted)
+        }
+    }
+
+    func requestRemove(_ id: UUID, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard let entry = entries.first(where: { $0.id == id }) else {
+            completion(false)
+            return
+        }
+        RuleAuthenticator.authenticate(reason: "Authenticate to revoke the allowlist entry for \u{201c}\(entry.ruleName)\u{201d} / \(entry.executable).") { [weak self] granted in
+            guard let self else { return }
+            if granted {
+                self.remove(id)
+                DiagnosticsLog.write("allowlist removed: \(entry.ruleName) / \(entry.executable)")
+            } else {
+                DiagnosticsLog.write("allowlist remove denied (authentication failed): \(entry.ruleName) / \(entry.executable)")
+            }
+            completion(granted)
+        }
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([AllowlistEntry].self, from: data) else { return }

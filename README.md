@@ -138,6 +138,11 @@ revoke allowlist entries from the "ALLOWLISTED" counter in the header.
 Nothing is suppressed silently: the header also shows a running count of
 events an allowlist rule has hidden.
 
+Adding or revoking an allowlist entry requires Touch ID/password too, for
+the same reason as toggling a rule — it's a way to blind a detection, so
+it isn't a free, unaudited click. Same log, same attempt-either-way
+guarantee.
+
 ## Running it
 
 The built app isn't committed (see `.gitignore`) — only the source and a
