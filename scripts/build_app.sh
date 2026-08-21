@@ -36,8 +36,28 @@ sips -z 512 512   "$SRC" --out "$ICONSET/icon_512x512.png"    >/dev/null
 cp "$SRC" "$ICONSET/icon_512x512@2x.png"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-echo "==> ad-hoc code signing"
-codesign --force --deep -s - "$APP"
+# Sign with a stable identity when one is available. An ad-hoc signature
+# (-s -) changes on every rebuild, which resets the app's identity as far as
+# the Keychain is concerned — macOS then re-prompts for access to the
+# IntegrityGuard key after each rebuild. A real signing identity (an Apple
+# Development certificate, or any codesigning cert) keeps the designated
+# requirement stable across rebuilds, so the Keychain ACL keeps matching and
+# the prompt never comes back. Resolution order:
+#   1. $ARGUS_SIGN_IDENTITY, if set (name or SHA-1 of a keychain identity)
+#   2. the first valid codesigning identity in the keychain
+#   3. ad-hoc (-s -) — the CI runner has no identities and lands here
+IDENTITY="${ARGUS_SIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+  IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/^ *[0-9]+\)/ { print $2; exit }')
+fi
+if [ -n "$IDENTITY" ]; then
+  echo "==> code signing as: $IDENTITY"
+  codesign --force --deep -s "$IDENTITY" "$APP"
+else
+  echo "==> ad-hoc code signing (no signing identity found)"
+  codesign --force --deep -s - "$APP"
+fi
 
 echo "==> done: $APP"
 echo "    open $APP"

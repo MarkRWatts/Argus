@@ -217,6 +217,14 @@ open build/Argus.app
 Requires Xcode command line tools (`xcode-select -p`) and macOS 13+. No
 network access, no special permissions, no entitlements to approve.
 
+The build signs with the first codesigning identity in your keychain (or
+`$ARGUS_SIGN_IDENTITY`), falling back to an ad-hoc signature when there is
+none, as on CI. A stable identity matters beyond cosmetics: the tamper-
+evidence key lives in the Keychain, and its ACL matches the app by signing
+identity — ad-hoc signatures change every rebuild, so every rebuild would
+re-prompt for Keychain access, while a real identity keeps the ACL matching
+across rebuilds (and, for Apple Development certificates, across renewals).
+
 A rolling diagnostic log is written to `~/Library/Logs/Argus/argus.log`
 independent of the UI:
 
