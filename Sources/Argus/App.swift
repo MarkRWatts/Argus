@@ -33,6 +33,10 @@ struct ArgusApp: App {
     @StateObject private var settings: AppSettings
     @StateObject private var ruleStore: RuleStore
     private let eventStore: EventStore
+    /// Held for the app's lifetime purely to keep its `DispatchSource`s
+    /// alive — `PersistenceWatcher` isn't observed by any view, so nothing
+    /// else in the view hierarchy retains it.
+    private let persistenceWatcher: PersistenceWatcher
 
     /// Identifies the main dashboard's `NSWindow`. Verified empirically
     /// (via a standalone probe app mirroring this app's Window + MenuBarExtra
@@ -65,11 +69,21 @@ struct ArgusApp: App {
         m.start()
         NotificationManager.requestAuthorizationIfNeeded()
 
+        // Second, independent sensor: catches persistence artifacts left on
+        // disk even when the process that wrote them was too short-lived for
+        // ProcessMonitor's ~1.2s poll to ever sample it.
+        let watcher = PersistenceWatcher()
+        watcher.onEvent = { [weak m] event in
+            m?.ingestExternal(event)
+        }
+        watcher.start()
+
         _monitor = StateObject(wrappedValue: m)
         _allowlist = StateObject(wrappedValue: allowlistStore)
         _settings = StateObject(wrappedValue: appSettings)
         _ruleStore = StateObject(wrappedValue: rules)
         eventStore = events
+        persistenceWatcher = watcher
     }
 
     var body: some Scene {

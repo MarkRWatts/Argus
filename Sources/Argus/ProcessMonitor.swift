@@ -281,6 +281,29 @@ final class ProcessMonitor: ObservableObject {
         }
     }
 
+    /// Entry point for events discovered by a sensor other than the `ps`
+    /// poll loop (currently `PersistenceWatcher`). Mirrors the matched-event
+    /// branch of `processSample` — insert-at-front with the 300 cap, persist,
+    /// bump counters, threshold-gated notification, risk contribution,
+    /// diagnostics line — but skips orbit-node handling: pid 0 has no orbit
+    /// meaning (the Orbit view visualizes the live process graph, and a
+    /// synthetic artifact event isn't part of it), and skips allowlist
+    /// filtering, since these events represent a persistence-artifact change
+    /// rather than a rule matching an observed process (see
+    /// `PersistenceEventBuilder`'s doc comment).
+    func ingestExternal(_ event: ProcessEvent) {
+        events.insert(event, at: 0)
+        if events.count > 300 { events.removeLast(events.count - 300) }
+        eventStore?.append(event)
+        historicalEventCount += 1
+        if let settings, settings.notificationThreshold.shouldNotify(for: event.topSeverity) {
+            NotificationManager.notify(event: event)
+        }
+        riskScore = min(100, riskScore + event.topSeverity.weight)
+        let techniques = event.rules.map(\.technique).joined(separator: "; ")
+        DiagnosticsLog.write("[\(event.topSeverity.label)] external pid=\(event.pid) \(event.executable) — \(techniques) — risk=\(Int(riskScore))")
+    }
+
     private func trimActivityLog() {
         let cutoff = Date().addingTimeInterval(-300)
         activityLog.removeAll { $0.0 < cutoff }
