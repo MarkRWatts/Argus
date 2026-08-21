@@ -4,11 +4,13 @@ struct DashboardView: View {
     @ObservedObject var monitor: ProcessMonitor
     @ObservedObject var allowlist: AllowlistStore
     let eventStore: EventStore
+    @ObservedObject var settings: AppSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var uptimeStart = Date()
     @State private var showingAllowlist = false
     @State private var showingRules = false
     @State private var showingHistory = false
+    @State private var showingSettings = false
     @State private var searchText = ""
     @State private var activeSeverities: Set<Severity> = Set(Severity.allCases)
     @State private var focusedSessionPPID: Int32?
@@ -89,6 +91,24 @@ struct DashboardView: View {
                 .help("Browse activity history — daily heatmap and technique frequency")
                 .popover(isPresented: $showingHistory, arrowEdge: .bottom) {
                     HistoryPanel(eventStore: eventStore)
+                }
+
+                Button {
+                    showingSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.accent)
+                        .padding(8)
+                        .background(
+                            Circle().fill(Theme.surfaceRaised)
+                                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Settings — poll interval, risk decay, notifications")
+                .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
+                    SettingsPanel(settings: settings)
                 }
             }
         }
@@ -671,5 +691,80 @@ struct HistoryPanel: View {
             }
             .frame(height: 4)
         }
+    }
+}
+
+/// Popover from the header's gear icon. Poll cadence and risk decay were
+/// hardcoded constants before this — genuinely a matter of taste (how
+/// twitchy vs. how patient the gauge should be), so they're exposed here
+/// rather than fixed in code.
+struct SettingsPanel: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("SETTINGS")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.5)
+                .foregroundStyle(Theme.muted)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Poll interval")
+                        .font(.system(size: 11, weight: .medium))
+                    Spacer()
+                    Text(String(format: "%.1fs", settings.pollIntervalSeconds))
+                        .font(Theme.mono(11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                Slider(value: $settings.pollIntervalSeconds, in: AppSettings.pollIntervalRange, step: 0.1)
+                Text("How often Argus samples the process table. Lower = faster detection, more CPU.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Risk decay half-life")
+                        .font(.system(size: 11, weight: .medium))
+                    Spacer()
+                    Text("\(Int(settings.riskDecayHalfLifeSeconds))s")
+                        .font(Theme.mono(11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                Slider(value: $settings.riskDecayHalfLifeSeconds, in: AppSettings.decayHalfLifeRange, step: 5)
+                Text("How long the threat gauge takes to settle after a spike. Higher = longer memory.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
+
+            Divider().background(Theme.border)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Notify me for")
+                    .font(.system(size: 11, weight: .medium))
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(NotificationThreshold.allCases, id: \.self) { threshold in
+                        Button {
+                            settings.notificationThreshold = threshold
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: settings.notificationThreshold == threshold ? "largecircle.fill.circle" : "circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(settings.notificationThreshold == threshold ? Theme.accent : Theme.dim)
+                                Text(threshold.label)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Theme.text)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 300)
+        .background(Theme.bg)
+        .foregroundStyle(Theme.text)
     }
 }

@@ -4,16 +4,19 @@ import SwiftUI
 struct ArgusApp: App {
     @StateObject private var monitor = ProcessMonitor()
     @StateObject private var allowlist = AllowlistStore()
+    @StateObject private var settings = AppSettings()
     private let eventStore = EventStore()
 
     var body: some Scene {
         Window("Argus", id: "main") {
-            DashboardView(monitor: monitor, allowlist: allowlist, eventStore: eventStore)
+            DashboardView(monitor: monitor, allowlist: allowlist, eventStore: eventStore, settings: settings)
                 .frame(minWidth: 980, minHeight: 680)
                 .onAppear {
                     monitor.configure(allowlist: allowlist)
                     monitor.configure(eventStore: eventStore)
+                    monitor.configure(settings: settings)
                     monitor.start()
+                    NotificationManager.requestAuthorizationIfNeeded()
                 }
                 .preferredColorScheme(.dark)
         }

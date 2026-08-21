@@ -47,6 +47,12 @@ without requiring enterprise EDR tooling or kernel entitlements.
   top-techniques chart, from the "HISTORY" stat in the header. Matched
   events persist to disk now, so this — and the event feed itself — survives
   a restart instead of resetting to empty.
+- **System notifications** — a real macOS notification for matched events at
+  or above a threshold you choose (off by default beyond critical-only).
+  Authorization is requested once on first launch.
+- **Settings** (gear icon in the header) — poll interval and risk-decay
+  half-life are tunable now rather than fixed constants, plus the
+  notification threshold.
 
 The app is dark-only by design, matching a monitoring-console identity — it
 does not follow the system light/dark appearance toggle.
@@ -117,8 +123,11 @@ swift test
 Covers the full rule catalog (one positive sample per rule, plus a set of
 everyday commands that must never match), the allowlist filtering logic and
 persistence, event history persistence and trimming, the event feed's
-search/severity/session filter logic, and the history heatmap's day-bucketing
-and technique-frequency aggregation. Any new rule added to
+search/severity/session filter logic, the history heatmap's day-bucketing
+and technique-frequency aggregation, settings persistence and range
+clamping, and the notification-threshold decision logic (not actual
+notification delivery — that needs a running app bundle and OS permission,
+neither of which a plain `swift test` run has). Any new rule added to
 `RuleEngine.catalog` without a corresponding sample in `RuleEngineTests`
 fails the suite by design.
 
@@ -135,6 +144,8 @@ Sources/Argus/
   EventStore.swift              persisted event history (events.jsonl)
   EventFilter.swift             search/severity/session filter logic
   HistoryStats.swift             day-bucketing + technique-frequency aggregation
+  AppSettings.swift              tunable poll interval, decay, notification threshold
+  NotificationManager.swift      thin UNUserNotificationCenter wrapper
   DiagnosticsLog.swift          on-disk activity log
   Theme.swift                  color/type tokens
   OrbitView.swift               Canvas-based radial visualization
@@ -148,6 +159,7 @@ Tests/ArgusTests/
   EventStoreTests.swift          history persistence + trimming
   EventFilterTests.swift         search/severity/session filter logic
   HistoryStatsTests.swift        day-bucketing + technique-frequency aggregation
+  AppSettingsTests.swift         settings persistence/clamping + notification-threshold logic
 Resources/
   Info.plist                   app bundle metadata
   icon_gen.swift                generates the app icon programmatically

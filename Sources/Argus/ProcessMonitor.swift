@@ -35,12 +35,17 @@ final class ProcessMonitor: ObservableObject {
     private var timerTask: Task<Void, Never>?
     private var allowlist: AllowlistStore?
     private var eventStore: EventStore?
+    private var settings: AppSettings?
     private let ownPID = ProcessInfo.processInfo.processIdentifier
-    private let sampleIntervalNanos: UInt64 = 1_200_000_000
-    private let decayFactor = pow(0.5, 1.2 / 55.0) // ~55s half-life
+    private let defaultIntervalSeconds: Double = 1.2
+    private let defaultHalfLifeSeconds: Double = 55.0
 
     func configure(allowlist: AllowlistStore) {
         self.allowlist = allowlist
+    }
+
+    func configure(settings: AppSettings) {
+        self.settings = settings
     }
 
     /// Loads recent persisted history into the live feed so a restart no
@@ -57,9 +62,14 @@ final class ProcessMonitor: ObservableObject {
         timerTask = Task { [weak self] in
             while let self, !Task.isCancelled {
                 await self.tick()
-                try? await Task.sleep(nanoseconds: self.sampleIntervalNanos)
+                let seconds = self.currentPollInterval
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             }
         }
+    }
+
+    private var currentPollInterval: Double {
+        settings?.pollIntervalSeconds ?? defaultIntervalSeconds
     }
 
     func stop() {
@@ -70,6 +80,8 @@ final class ProcessMonitor: ObservableObject {
     private func tick() async {
         let raw = await Self.sampleProcesses()
         sampleCount += 1
+        let halfLife = settings?.riskDecayHalfLifeSeconds ?? defaultHalfLifeSeconds
+        let decayFactor = pow(0.5, currentPollInterval / halfLife)
         riskScore = max(0, riskScore * decayFactor)
         pruneOrbitNodes()
 
@@ -113,6 +125,9 @@ final class ProcessMonitor: ObservableObject {
                 if events.count > 300 { events.removeLast(events.count - 300) }
                 eventStore?.append(event)
                 historicalEventCount += 1
+                if let settings, settings.notificationThreshold.shouldNotify(for: event.topSeverity) {
+                    NotificationManager.notify(event: event)
+                }
                 riskScore = min(100, riskScore + event.topSeverity.weight)
                 orbitNodes.append(OrbitNode(id: event.id, pid: proc.id, ppid: proc.ppid,
                                              severity: event.topSeverity, label: proc.executable,
