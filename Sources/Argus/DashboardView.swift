@@ -501,6 +501,16 @@ struct EventRow: View {
                 Button("Allow future \u{201c}\(rule.name)\u{201d} alerts from \(event.executable)") {
                     allowlist.requestAllow(ruleName: rule.name, executable: event.executable)
                 }
+                // Scoped alternatives, one per supervisor label on this
+                // event (capped at 2, mirroring `provenanceBadge`) — lets
+                // the user narrow the allowlist to "only under claude"
+                // instead of blinding the rule for this executable
+                // everywhere.
+                ForEach(event.provenance.prefix(2), id: \.self) { label in
+                    Button("Allow only when under \(label)") {
+                        allowlist.requestAllow(ruleName: rule.name, executable: event.executable, requiredProvenance: label)
+                    }
+                }
             }
             Divider()
             Button("Copy as JSON") {
@@ -791,8 +801,13 @@ private struct AllowlistRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.ruleName)
-                    .font(Theme.mono(11, weight: .semibold))
+                HStack(spacing: 5) {
+                    Text(entry.ruleName)
+                        .font(Theme.mono(11, weight: .semibold))
+                    if let requiredProvenance = entry.requiredProvenance {
+                        scopeChip(requiredProvenance)
+                    }
+                }
                 Text("\(entry.executable) · since \(dateFormatter.string(from: entry.createdAt))")
                     .font(.system(size: 9))
                     .foregroundStyle(Theme.dim)
@@ -815,6 +830,18 @@ private struct AllowlistRow: View {
             .disabled(isAuthenticating)
             .help("Revoke this allowlist entry (Touch ID/password required)")
         }
+    }
+
+    /// Dim "only under <label>" chip, styled like `EventRow.provenanceBadge`
+    /// so the scope reads as the same kind of attribution context there and
+    /// here rather than a second, inconsistent visual language.
+    private func scopeChip(_ label: String) -> some View {
+        Text("only under \(label)")
+            .font(.system(size: 8.5, weight: .medium))
+            .foregroundStyle(Theme.dim)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Theme.surfaceRaised)
+            .clipShape(Capsule())
     }
 }
 

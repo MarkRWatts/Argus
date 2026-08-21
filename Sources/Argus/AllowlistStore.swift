@@ -5,12 +5,41 @@ struct AllowlistEntry: Identifiable, Codable, Equatable {
     let ruleName: String
     let executable: String
     let createdAt: Date
+    /// When set, this entry only suppresses alerts for a process whose
+    /// `ProcessEvent.provenance` includes this label (case-insensitively) —
+    /// e.g. "claude", so allowlisting (rule, zsh) doesn't blind the rule for
+    /// every `zsh` on the system, only the ones running under that
+    /// supervisor. `nil` (the default) means unconditional, matching the
+    /// suppression semantics from before this field existed.
+    ///
+    /// Matching is by provenance *label*, not a raw ancestry substring —
+    /// deliberately reusing `ProvenanceClassifier` as the single source of
+    /// truth for what an ancestry means, rather than giving the allowlist
+    /// its own, possibly divergent, notion of "under claude".
+    ///
+    /// Declared `Optional` so the compiler-synthesized `Decodable` decodes it
+    /// with `decodeIfPresent`: `allowlist.json` entries written before this
+    /// field existed are missing the key entirely and still decode, as
+    /// unconditional entries.
+    let requiredProvenance: String?
 
-    init(id: UUID = UUID(), ruleName: String, executable: String, createdAt: Date = Date()) {
+    init(id: UUID = UUID(), ruleName: String, executable: String, createdAt: Date = Date(), requiredProvenance: String? = nil) {
         self.id = id
         self.ruleName = ruleName
         self.executable = executable
         self.createdAt = createdAt
+        self.requiredProvenance = requiredProvenance
+    }
+
+    /// Whether this entry suppresses an alert for the given rule/executable
+    /// observed with the given provenance labels — the one definition of
+    /// "does this entry apply", shared by `AllowlistStore.isAllowed`
+    /// (live suppression) and `AllowlistStore.allow` (redundancy checks on
+    /// write) so the two can never drift apart.
+    func matches(ruleName: String, executable: String, provenance: [String]) -> Bool {
+        guard self.ruleName == ruleName, self.executable == executable else { return false }
+        guard let requiredProvenance else { return true }
+        return provenance.contains { $0.caseInsensitiveCompare(requiredProvenance) == .orderedSame }
     }
 }
 
@@ -64,13 +93,26 @@ final class AllowlistStore: ObservableObject {
         }
     }
 
-    func isAllowed(ruleName: String, executable: String) -> Bool {
-        entries.contains { $0.ruleName == ruleName && $0.executable == executable }
+    func isAllowed(ruleName: String, executable: String, provenance: [String]) -> Bool {
+        entries.contains { $0.matches(ruleName: ruleName, executable: executable, provenance: provenance) }
     }
 
-    func allow(ruleName: String, executable: String) {
-        guard !isAllowed(ruleName: ruleName, executable: executable) else { return }
-        entries.append(AllowlistEntry(ruleName: ruleName, executable: executable))
+    /// True when an existing entry already covers a request to allowlist
+    /// (ruleName, executable) at `requiredProvenance`'s scope — either an
+    /// exact-scope duplicate, or a broader unconditional entry that already
+    /// suppresses everything a narrower scoped request would. Distinct from
+    /// `isAllowed`: that answers "would this suppress a live event right
+    /// now"; this answers "would adding this entry be redundant".
+    private func alreadyCovers(ruleName: String, executable: String, requiredProvenance: String?) -> Bool {
+        entries.contains { entry in
+            guard entry.ruleName == ruleName, entry.executable == executable else { return false }
+            return entry.requiredProvenance == nil || entry.requiredProvenance == requiredProvenance
+        }
+    }
+
+    func allow(ruleName: String, executable: String, requiredProvenance: String? = nil) {
+        guard !alreadyCovers(ruleName: ruleName, executable: executable, requiredProvenance: requiredProvenance) else { return }
+        entries.append(AllowlistEntry(ruleName: ruleName, executable: executable, requiredProvenance: requiredProvenance))
         save()
     }
 
@@ -84,18 +126,19 @@ final class AllowlistStore: ObservableObject {
     /// as disabling a rule outright, so it goes through the same Touch
     /// ID/password gate as `RuleStore.requestToggle`, with every attempt
     /// logged regardless of outcome.
-    func requestAllow(ruleName: String, executable: String, completion: @escaping (Bool) -> Void = { _ in }) {
-        guard !isAllowed(ruleName: ruleName, executable: executable) else {
+    func requestAllow(ruleName: String, executable: String, requiredProvenance: String? = nil, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard !alreadyCovers(ruleName: ruleName, executable: executable, requiredProvenance: requiredProvenance) else {
             completion(true)
             return
         }
-        RuleAuthenticator.authenticate(reason: "Authenticate to allowlist \u{201c}\(ruleName)\u{201d} alerts from \(executable).") { [weak self] granted in
+        let scopeSuffix = requiredProvenance.map { " (only under \($0))" } ?? ""
+        RuleAuthenticator.authenticate(reason: "Authenticate to allowlist \u{201c}\(ruleName)\u{201d} alerts from \(executable)\(scopeSuffix).") { [weak self] granted in
             guard let self else { return }
             if granted {
-                self.allow(ruleName: ruleName, executable: executable)
-                DiagnosticsLog.write("allowlist added: \(ruleName) / \(executable)")
+                self.allow(ruleName: ruleName, executable: executable, requiredProvenance: requiredProvenance)
+                DiagnosticsLog.write("allowlist added: \(ruleName) / \(executable)\(scopeSuffix)")
             } else {
-                DiagnosticsLog.write("allowlist add denied (authentication failed): \(ruleName) / \(executable)")
+                DiagnosticsLog.write("allowlist add denied (authentication failed): \(ruleName) / \(executable)\(scopeSuffix)")
             }
             completion(granted)
         }
@@ -134,7 +177,7 @@ final class AllowlistStore: ObservableObject {
 /// Pure filtering logic, kept free of the actor-isolated store so it's
 /// trivially unit-testable without spinning up MainActor/async plumbing.
 enum AllowlistFilter {
-    static func apply(_ matches: [MatchedRule], executable: String, isAllowed: (String, String) -> Bool) -> [MatchedRule] {
-        matches.filter { !isAllowed($0.name, executable) }
+    static func apply(_ matches: [MatchedRule], executable: String, provenance: [String], isAllowed: (String, String, [String]) -> Bool) -> [MatchedRule] {
+        matches.filter { !isAllowed($0.name, executable, provenance) }
     }
 }

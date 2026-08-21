@@ -290,11 +290,27 @@ final class ProcessMonitor: ObservableObject {
                 return MatchedRule(name: rule.title, severity: rule.severity, technique: rule.techniqueLabel,
                                     explanation: rule.description ?? "")
             }
+            // Provenance is classified before allowlist filtering (rather
+            // than only after, once matches are known) so a scoped entry —
+            // e.g. "(rule, zsh) only under claude" — can actually see the
+            // ancestry it's scoped to. Skipped when there are no raw matches
+            // to filter: classification is pure but not free, and most
+            // sampled processes never trip a rule at all.
+            let provenance: [String]
             let matches: [MatchedRule]
-            if let allowlist {
-                matches = AllowlistFilter.apply(rawMatches, executable: proc.executable, isAllowed: allowlist.isAllowed)
-            } else {
+            if rawMatches.isEmpty {
+                provenance = []
                 matches = rawMatches
+            } else {
+                provenance = ProvenanceClassifier.classify(
+                    ancestorImages: ancestors.map(\.image),
+                    ancestorCommandLines: ancestors.map(\.command)
+                ).map(\.label)
+                if let allowlist {
+                    matches = AllowlistFilter.apply(rawMatches, executable: proc.executable, provenance: provenance, isAllowed: allowlist.isAllowed)
+                } else {
+                    matches = rawMatches
+                }
             }
             suppressedCount += rawMatches.count - matches.count
 
@@ -305,10 +321,6 @@ final class ProcessMonitor: ObservableObject {
                                              bornAt: Date(), angle: angle))
             } else {
                 matchedThisTick += 1
-                let provenance = ProvenanceClassifier.classify(
-                    ancestorImages: ancestors.map(\.image),
-                    ancestorCommandLines: ancestors.map(\.command)
-                ).map(\.label)
                 let event = ProcessEvent(pid: proc.id, ppid: proc.ppid, executable: proc.executable,
                                           command: proc.command, rules: matches, timestamp: Date(),
                                           provenance: provenance)
