@@ -7,10 +7,17 @@ import Foundation
 /// (argv0, image path, parent command lines) is trivially spoofable — any
 /// process can name itself "claude", launch from a path containing
 /// "/.claude/", or otherwise imitate a supervisor's fingerprint. A
-/// `ProvenanceTag` must never be treated as a trust signal, and must never be
-/// used to suppress, downgrade, or auto-allow a detection. Its only purpose
-/// is to help a human triaging the feed answer "who would plausibly have
-/// launched this?" faster than reading raw parent command lines.
+/// `ProvenanceTag` must never be treated as an *implicit* trust signal —
+/// silently suppressing, downgrading, or auto-allowing a detection because
+/// of one is forbidden. The sanctioned uses are explicit, user-chosen, and
+/// visible: a provenance-scoped allowlist entry the user creates behind a
+/// Touch ID prompt (`AllowlistStore`), the notification-quieting toggle with
+/// its own visible counter (`AppSettings.quietAgentNotifications`), and
+/// *escalating* agent-attributed activity that matches a sensitive technique
+/// (`AgentActivityPolicy`) — the last of these makes a detection louder, not
+/// quieter. Its only other purpose is to help a human triaging the feed
+/// answer "who would plausibly have launched this?" faster than reading raw
+/// parent command lines.
 struct ProvenanceTag: Equatable {
     let category: String
     let label: String

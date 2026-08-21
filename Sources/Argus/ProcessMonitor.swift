@@ -148,6 +148,14 @@ final class ProcessMonitor: ObservableObject {
     /// A hung or missing `/bin/ps` must not be silently mistaken for "no
     /// processes running" — this is the signal the UI can surface instead.
     @Published private(set) var isDegraded: Bool = false
+    /// Count of `.routine` agent-attributed notifications skipped this
+    /// session because `AppSettings.quietAgentNotifications` is on — see
+    /// `AgentActivityPolicy.Assessment`. Only incremented when the event
+    /// would otherwise have crossed `notificationThreshold`; a routine
+    /// agent event that wouldn't have notified anyway isn't "quieted".
+    /// Purely a UI counter for the settings pane caption — never consulted
+    /// by detection logic, and reset only by relaunch.
+    @Published private(set) var agentQuietedNotificationCount: Int = 0
 
     var riskLevel: Severity {
         switch riskScore {
@@ -296,16 +304,19 @@ final class ProcessMonitor: ObservableObject {
             // ancestry it's scoped to. Skipped when there are no raw matches
             // to filter: classification is pure but not free, and most
             // sampled processes never trip a rule at all.
+            let provenanceTags: [ProvenanceTag]
             let provenance: [String]
             let matches: [MatchedRule]
             if rawMatches.isEmpty {
+                provenanceTags = []
                 provenance = []
                 matches = rawMatches
             } else {
-                provenance = ProvenanceClassifier.classify(
+                provenanceTags = ProvenanceClassifier.classify(
                     ancestorImages: ancestors.map(\.image),
                     ancestorCommandLines: ancestors.map(\.command)
-                ).map(\.label)
+                )
+                provenance = provenanceTags.map(\.label)
                 if let allowlist {
                     matches = AllowlistFilter.apply(rawMatches, executable: proc.executable, provenance: provenance, isAllowed: allowlist.isAllowed)
                 } else {
@@ -321,26 +332,53 @@ final class ProcessMonitor: ObservableObject {
                                              bornAt: Date(), angle: angle))
             } else {
                 matchedThisTick += 1
+
+                // Captured before the synthetic escalation rule (if any) is
+                // appended, so chain correlation below keys off only the
+                // rules this process tree actually triggered — the
+                // escalation rule's fixed name must not be what makes two
+                // unrelated agent-attributed events "chain" with each other.
+                let originalRuleNames = Set(matches.map(\.name))
+                let originalTechniques = Set(matches.map(\.technique))
+
+                let assessment = AgentActivityPolicy.assessment(tags: provenanceTags, matchedRules: matches)
+                var eventRules = matches
+                if case .sensitive(let sensitiveTechniques) = assessment {
+                    eventRules.append(AgentActivityPolicy.escalationRule(
+                        matchedTechniques: sensitiveTechniques,
+                        otherSeverities: matches.map(\.severity)
+                    ))
+                }
+
                 let event = ProcessEvent(pid: proc.id, ppid: proc.ppid, executable: proc.executable,
-                                          command: proc.command, rules: matches, timestamp: Date(),
+                                          command: proc.command, rules: eventRules, timestamp: Date(),
                                           provenance: provenance)
                 events.insert(event, at: 0)
                 if events.count > 300 { events.removeLast(events.count - 300) }
                 eventStore?.append(event)
                 historicalEventCount += 1
                 if let settings, settings.notificationThreshold.shouldNotify(for: event.topSeverity) {
-                    NotificationManager.notify(event: event)
+                    // A `.routine` agent-attributed event earns a quieter
+                    // UI, not a quieter record: the notification is the
+                    // only thing skipped here — feed, history, and risk
+                    // score above are all already unconditional. `.sensitive`
+                    // assessments always fall through to a real notification.
+                    if settings.quietAgentNotifications, assessment == .routine {
+                        agentQuietedNotificationCount += 1
+                    } else {
+                        NotificationManager.notify(event: event)
+                    }
                 }
                 riskScore = min(100, riskScore + event.topSeverity.weight)
                 orbitNodes.append(OrbitNode(id: event.id, pid: proc.id, ppid: proc.ppid,
                                              severity: event.topSeverity, label: proc.executable,
                                              bornAt: Date(), angle: angle))
-                let techniques = matches.map(\.technique).joined(separator: "; ")
+                let techniques = eventRules.map(\.technique).joined(separator: "; ")
                 DiagnosticsLog.write("[\(event.topSeverity.label)] pid=\(proc.id) \(proc.executable) — \(techniques) — risk=\(Int(riskScore))")
 
                 if let detection = chainCorrelator.register(
                     eventID: event.id, pid: proc.id, executable: proc.executable,
-                    ruleNames: Set(matches.map(\.name)), techniques: Set(matches.map(\.technique)),
+                    ruleNames: originalRuleNames, techniques: originalTechniques,
                     severity: event.topSeverity, timestamp: event.timestamp, ancestry: ancestors.map(\.pid)
                 ) {
                     ingestExternal(Self.chainEvent(from: detection, pid: proc.id, ppid: proc.ppid))

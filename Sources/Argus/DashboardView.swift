@@ -114,7 +114,7 @@ struct DashboardView: View {
                 .buttonStyle(.plain)
                 .help("Settings — poll interval, risk decay, notifications")
                 .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
-                    SettingsPanel(settings: settings)
+                    SettingsPanel(settings: settings, monitor: monitor)
                 }
             }
         }
@@ -1028,6 +1028,7 @@ struct HistoryPanel: View {
 /// rather than fixed in code.
 struct SettingsPanel: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject var monitor: ProcessMonitor
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -1105,11 +1106,41 @@ struct SettingsPanel: View {
                     .font(.system(size: 9.5))
                     .foregroundStyle(Theme.dim)
             }
+
+            Divider().background(Theme.border)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: $settings.quietAgentNotifications) {
+                    Text("Quiet notifications for routine AI-agent activity")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.text)
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+                Text(quietAgentCaption)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
         }
         .padding(14)
         .frame(width: 300)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
+    }
+
+    /// Spells out exactly what the toggle above does and doesn't affect —
+    /// feed/history/risk/log are unconditional, only the system notification
+    /// for a *routine* agent-attributed event is skipped, never a sensitive
+    /// one — plus a running count once anything has actually been quieted
+    /// this session, so the setting's effect is visible, not just claimed.
+    private var quietAgentCaption: String {
+        let base = "Feed, history, risk score, and the diagnostics log are unaffected — only the "
+            + "system notification is skipped, and only for routine AI-agent activity. Activity "
+            + "matching a sensitive technique (persistence, credential access, defense evasion) "
+            + "always notifies at the normal threshold."
+        guard monitor.agentQuietedNotificationCount > 0 else { return base }
+        let count = monitor.agentQuietedNotificationCount
+        return base + " \(count) notification\(count == 1 ? "" : "s") quieted this session."
     }
 
     /// `SMAppService` is the source of truth for launch-at-login state —

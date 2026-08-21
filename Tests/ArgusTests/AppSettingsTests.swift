@@ -41,6 +41,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.pollIntervalSeconds, 1.2)
         XCTAssertEqual(settings.riskDecayHalfLifeSeconds, 55.0)
         XCTAssertEqual(settings.notificationThreshold, .criticalOnly)
+        XCTAssertTrue(settings.quietAgentNotifications)
     }
 
     func testValuesClampToRange() {
@@ -58,9 +59,24 @@ final class AppSettingsTests: XCTestCase {
         let settings = AppSettings(defaults: defaults)
         settings.pollIntervalSeconds = 2.5
         settings.notificationThreshold = .allMatches
+        settings.quietAgentNotifications = false
 
         let reloaded = AppSettings(defaults: defaults)
         XCTAssertEqual(reloaded.pollIntervalSeconds, 2.5)
         XCTAssertEqual(reloaded.notificationThreshold, .allMatches)
+        XCTAssertFalse(reloaded.quietAgentNotifications)
+    }
+
+    func testQuietAgentNotificationsPersistsWhenExplicitlySetTrue() {
+        // Distinct from testDefaults: this exercises the stored-true path
+        // through the `defaults.object(forKey:)` branch, not just the
+        // fallback-to-true-when-absent path.
+        let defaults = makeDefaults()
+        let settings = AppSettings(defaults: defaults)
+        settings.quietAgentNotifications = false
+        settings.quietAgentNotifications = true
+
+        let reloaded = AppSettings(defaults: defaults)
+        XCTAssertTrue(reloaded.quietAgentNotifications)
     }
 }
