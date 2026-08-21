@@ -3,7 +3,28 @@ import Foundation
 /// Minimal on-disk activity log, independent of the UI, so posture can be
 /// inspected (`tail -f`) without the window ever being on screen.
 enum DiagnosticsLog {
+    /// True when this process is an XCTest run rather than the real app.
+    /// Both signals are checked: the XCTest environment variable covers
+    /// `swift test`/xcodebuild runs, and the class lookup covers any harness
+    /// that loads XCTest without setting it.
+    private static let isRunningUnderXCTest =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+
     static let url: URL = {
+        // Test runs exercise the same code paths as the app (store inits,
+        // integrity verdicts, rule supersession) and used to append their
+        // noise to the real log — and since log lines only carry basenames
+        // like "rules-state.json", test lines were indistinguishable from
+        // real app activity when tailing it. Route tests to a per-process
+        // temp file instead: the write path still runs for real, but the
+        // user's log stays an honest record of the app alone.
+        if isRunningUnderXCTest {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("argus-test-logs", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir.appendingPathComponent("argus-\(ProcessInfo.processInfo.processIdentifier).log")
+        }
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/Argus", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
