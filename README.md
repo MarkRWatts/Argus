@@ -55,7 +55,13 @@ without requiring enterprise EDR tooling or kernel entitlements.
   or above a threshold you choose (off by default beyond critical-only).
   Notifications carry "Show in Argus" and "Allowlist…" action buttons — the
   allowlist action goes through the exact same Touch ID gate as the in-app path.
-  Authorization is requested once on first launch.
+  Authorization is requested once on first launch. Busy process trees (e.g.
+  an AI-agent session doing extensive automation) no longer produce unbounded
+  notification spam: per process-tree root, the first 3 sub-critical
+  notifications in a rolling 5-minute window deliver individually; after that
+  they collapse into one continuously-updated digest notification ("15 alerts,
+  techniques: privilege escalation, persistence… since 14:02"). Critical
+  alerts always deliver individually and never count against the budget.
 - **Event export** — right-click an event to "Copy as JSON"; from the History
   panel, export the full event history as JSON or CSV (RFC 4180-quoted so
   command lines with embedded commas and quotes don't misalign spreadsheets).
@@ -119,6 +125,19 @@ when the writing process was too short-lived for the polling monitor to ever
 sample it. Allowlist filtering deliberately doesn't apply to these events —
 a persistence artifact change is a different thing than an allowlisted
 process.
+
+### Docker container activity
+
+Containers run inside Docker's Linux VM, invisible to the host's `ps`. A
+`docker events` subscriber surfaces container lifecycle activity as synthetic
+process events tagged with provenance "docker": container starts (info level,
+T1610 Deploy Container) and execs into running containers (watch level, T1609
+Container Administration Command — a common post-compromise lateral step).
+The watcher is resilient to the Docker daemon restarting (60-second retry
+loop) and inert if Docker CLI is not installed. Note the scope limitation:
+only container operations the daemon reports; processes *inside* containers
+remain invisible to host-level detection — in-container detection is a
+different tool's job.
 
 ### Tamper evidence
 
@@ -281,7 +300,7 @@ sidecar records HMAC-SHA256 MACs of the security-relevant JSON files
 swift test
 ```
 
-170 tests. The Sigma engine is validated two ways: `SigmaEngineTests` checks
+210 tests. The Sigma engine is validated two ways: `SigmaEngineTests` checks
 the YAML parser, condition evaluator, and matcher against real rule text
 fetched from SigmaHQ (including the `N of selection_*` quantifier, `base64`/
 `base64offset`/`cased` modifiers, and keyword matching), and `BundledRulesTests`
@@ -294,8 +313,9 @@ covered: `RuleStoreTests` (enable/disable persistence, user-rule loading),
 `ChainCorrelatorTests` (sequence detection), `PersistenceWatcherTests`
 (artifact diffing and event generation), `IntegrityGuardTests` (MAC
 recording and verification), `ProvenanceClassifierTests` (ancestry classification),
-and `AgentActivityPolicyTests` (agent-attributed event escalation and notification
-quieting).
+`AgentActivityPolicyTests` (agent-attributed event escalation and notification
+quieting), `NotificationRollupTests` (digest throttling and event batching),
+and `DockerWatcherTests` (container lifecycle event synthesis).
 
 ## Project layout
 
@@ -317,6 +337,7 @@ Sources/Argus/
   AgentActivityPolicy.swift      escalation and notification quieting for agent-attributed events
   ChainCorrelator.swift         correlates techniques in same process tree (10-min window)
   PersistenceWatcher.swift      event-driven monitoring of LaunchAgents/Daemons/periodic
+  DockerWatcher.swift           docker events subscriber for container lifecycle events
   IntegrityGuard.swift          HMAC verification of rules-state.json and allowlist.json
   AllowlistStore.swift          persisted (rule, executable, provenance scope) suppression
   EventStore.swift              persisted event history (events.jsonl)
@@ -325,6 +346,7 @@ Sources/Argus/
   HistoryStats.swift            day-bucketing + technique-frequency aggregation
   AppSettings.swift             tunable poll interval, decay, notification threshold
   NotificationManager.swift     UNUserNotificationCenter wrapper
+  NotificationRollup.swift      per-tree-root notification throttling and digesting
   NotificationResponder.swift   notification actions (Show in Argus, Allowlist)
   DiagnosticsLog.swift          on-disk activity log
   Theme.swift                   color/type tokens
@@ -348,6 +370,8 @@ Tests/ArgusTests/
   AgentActivityPolicyTests.swift  escalation rules and notification quieting logic
   ChainCorrelatorTests.swift     sequence detection in process trees
   PersistenceWatcherTests.swift  artifact diffing and event generation
+  DockerWatcherTests.swift       container lifecycle event synthesis and resilience
+  NotificationRollupTests.swift  per-tree throttling, digest batching, budget enforcement
   IntegrityGuardTests.swift      MAC recording and verification
 Resources/
   Info.plist                   app bundle metadata

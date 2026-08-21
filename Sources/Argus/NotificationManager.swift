@@ -54,4 +54,42 @@ enum NotificationManager {
         let request = UNNotificationRequest(identifier: event.id.uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
+
+    /// Stable per-root identifier for a rollup digest notification. Reusing
+    /// the same identifier on every call for a given root is what makes
+    /// `notifyDigest` replace the previous digest in place rather than
+    /// stacking a new banner per folded-in event — see that method's doc
+    /// comment.
+    static func rollupIdentifier(rootPID: Int32) -> String { "argus.rollup.\(rootPID)" }
+
+    private static let digestTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    /// Posts, or on a later call for the same `rootPID`, replaces, the
+    /// digest notification summarizing a busy process tree's rolled-up
+    /// alerts. `UNUserNotificationCenter.add` replaces any pending/delivered
+    /// request that shares an identifier, so reusing
+    /// `rollupIdentifier(rootPID:)` across calls updates one notification in
+    /// place instead of stacking a new banner per event `NotificationRollup`
+    /// folds into the digest — the whole point of rolling up.
+    ///
+    /// Carries no `ruleNameKey`/`executableKey` userInfo — unlike a single
+    /// `notify(event:)` call, a digest spans many rules and processes, not
+    /// one, so there's no single rule its "Allowlist…" action could act on.
+    /// It still sets `categoryIdentifier`, so tapping the notification body
+    /// opens Argus via the same default-action handling `NotificationResponder`
+    /// already gives every other event notification.
+    static func notifyDigest(rootPID: Int32, count: Int, techniques: [String], since: Date) {
+        let content = UNMutableNotificationContent()
+        content.title = "Busy process tree (pid \(rootPID))"
+        content.body = "\(count) alerts, techniques: \(techniques.joined(separator: ", ")) since \(digestTimeFormatter.string(from: since))"
+        content.sound = .default
+        content.categoryIdentifier = categoryIdentifier
+
+        let request = UNNotificationRequest(identifier: rollupIdentifier(rootPID: rootPID), content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
 }
