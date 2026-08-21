@@ -53,20 +53,38 @@ without requiring enterprise EDR tooling or kernel entitlements.
   a restart instead of resetting to empty.
 - **System notifications** — a real macOS notification for matched events at
   or above a threshold you choose (off by default beyond critical-only).
+  Notifications carry "Show in Argus" and "Allowlist…" action buttons — the
+  allowlist action goes through the exact same Touch ID gate as the in-app path.
   Authorization is requested once on first launch.
+- **Event export** — right-click an event to "Copy as JSON"; from the History
+  panel, export the full event history as JSON or CSV (RFC 4180-quoted so
+  command lines with embedded commas and quotes don't misalign spreadsheets).
 - **Settings** (gear icon in the header) — poll interval and risk-decay
-  half-life are tunable now rather than fixed constants, plus the
-  notification threshold.
+  half-life are tunable now rather than fixed constants, the notification
+  threshold, and a "Launch at login" toggle (macOS 13+, uses SMAppService).
 
 The app is dark-only by design, matching a monitoring-console identity — it
 does not follow the system light/dark appearance toggle.
 
 ## How detection works
 
-`ProcessMonitor` samples `ps -axww -o pid,ppid,command` roughly every 1.2s
+`ProcessMonitor` samples `ps -axww -o pid,ppid,user,command` roughly every 1.2s
 and diffs it against the previous sample to find newly-spawned processes.
 Each new process is checked against every active rule; a match becomes an
 event with severity, a MITRE technique label, and an explanation.
+
+The sample includes the user column now, so rules can match `User` and
+`ParentUser` fields. Parent context (image, command line, and user) is
+resolved from a cross-tick cache retained for ~3 polling intervals, so a
+short-lived parent that exits before the next poll still resolves for
+parent-keyed rules — a common race in LOLBin chains where a spawned parent
+like `sh -c` is gone from the process table by the next sample.
+
+The `ps` invocation has a 10-second hard timeout. After 3 consecutive
+sampling failures, the app enters a visible "degraded" state: the menu bar
+icon switches to a warning triangle, a warning row appears in the flyout, and
+a MONITOR DEGRADED badge shows in the header. This prevents a failed sample
+from being mistaken for "no processes running". Recovery is automatic.
 
 This is **polling-based, not kernel-event-based** — deliberately. True
 exec()-level capture on macOS requires the `endpoint-security` entitlement,
@@ -78,20 +96,63 @@ exits within the ~1.2s window can be missed as an individual event (though a
 parent shell invoking it inline is still visible, since the parent's full
 command line is what `ps` reports).
 
+### Sequence and chain correlation
+
+When distinct techniques fire in the same process tree within a rolling
+10-minute window, Argus emits a synthetic "Suspicious sequence" event. Its
+severity is escalated one level above the members' maximum (capped at
+critical), and the event lists the member processes and rules. This is the
+signal the README's own thesis calls out: a single LOLBin invocation is often
+unremarkable, but two or more different techniques firing inside the same
+process tree is a much stronger indicator. Same-rule refires, same-pid
+multi-rule matches, and process trees related only through launchd don't
+qualify as chains.
+
+### Persistence-artifact watcher
+
+An independent, event-driven sensor watches standard macOS persistence
+locations: `~/Library/LaunchAgents`, `/Library/LaunchAgents`,
+`/Library/LaunchDaemons`, and `/etc/periodic`. Added or modified files are
+reported with elevated severity; removals are also watched. Baseline state
+at startup is silent, but the watcher catches persistence artifacts even
+when the writing process was too short-lived for the polling monitor to ever
+sample it. Allowlist filtering deliberately doesn't apply to these events —
+a persistence artifact change is a different thing than an allowlisted
+process.
+
+### Tamper evidence
+
+The app records HMAC-SHA256 MACs of `rules-state.json` and `allowlist.json`
+on every authenticated write into a sidecar `integrity.json` file. The signing
+key is stored in the login Keychain (service "Argus", account
+"integrity-key") rather than on disk, so an attacker who can rewrite the
+guarded files in place has no reason to also have Keychain access. At
+launch, any mismatch between a file's current contents and its recorded MAC
+is surfaced as a critical "Detection state modified outside Argus" event (T1562.001),
+so the tamper itself becomes visible in the feed. This is evidence, not prevention — a same-user attacker can still rewrite the files, but no longer
+silently.
+
 ## Rule format and management
 
 Rules are [Sigma](https://github.com/SigmaHQ/sigma) — the open, vendor-
 neutral YAML format the wider detection-engineering community actually
 publishes in, rather than a bespoke format invented for this app. A rule is
-a `logsource` (we only match `category: process_creation`, `product: macos`),
-a named `detection` block of field/modifier/value selections
-(`CommandLine|contains`, `Image|endswith`, `ParentImage|contains`, `|re`
-regex, `|all` for AND-of-list, etc.), and a `condition` string combining
-those selections (`selection`, `1 of selection_*`, `all of selection_* and
-not 1 of filter_*`, and so on). `Sources/Argus/Sigma/` is a real, if partial,
-implementation of that spec: a hand-rolled YAML parser, a condition-language
-parser/evaluator, and a field matcher — not a re-skin of the old pattern
-list.
+a `logsource` (we only match `category: process_creation`, `product: macos`
+or Linux), a named `detection` block of field/modifier/value selections, and
+a `condition` string combining those selections. `Sources/Argus/Sigma/` is a
+real, if partial, implementation of that spec: a hand-rolled YAML parser,
+a condition-language parser/evaluator, and a field matcher — not a re-skin
+of the old pattern list.
+
+The condition language now supports the general `N of selection_*` quantifier
+(not just `1 of` and `all of`). The matcher supports `base64`, `base64offset`
+(all three byte-alignment encodings, verified against SigmaHQ reference
+vectors), and `cased` modifiers for case-sensitive comparison. Keyword
+selections (those with no field name) match against all record fields per
+spec, not just CommandLine. Rules whose `logsource` is incompatible
+(something other than `process_creation`/`macos` or portable Linux techniques)
+are silently skipped at load time; a count is shown in the rule browser
+alongside the rule count in the header.
 
 **85 rules ship with the app**, sourced from three places:
 
@@ -169,7 +230,9 @@ Matched events persist to `~/Library/Application Support/Argus/events.jsonl`
 periodically rather than on every write, so a live tail will occasionally
 see the file shrink back down). Disabled-rule state persists to
 `~/Library/Application Support/Argus/rules-state.json`, and your own rule
-files live in `~/Library/Application Support/Argus/rules/`.
+files live in `~/Library/Application Support/Argus/rules/`. An `integrity.json`
+sidecar records HMAC-SHA256 MACs of the security-relevant JSON files
+(allowlist.json and rules-state.json) to detect out-of-band edits.
 
 ## Testing
 
@@ -177,20 +240,19 @@ files live in `~/Library/Application Support/Argus/rules/`.
 swift test
 ```
 
-45 tests. The Sigma engine is validated two ways: `SigmaEngineTests` checks
+119 tests. The Sigma engine is validated two ways: `SigmaEngineTests` checks
 the YAML parser, condition evaluator, and matcher against real rule text
-fetched from SigmaHQ (list-of-selections, `|contains|all`, nested
-conditions — not paraphrased), and `BundledRulesTests` loads all 85 shipped
-rule files from disk, asserts a few structural invariants (unique IDs,
-every condition parses, rule count is the exact expected number so silently
-losing a whole directory fails loudly), and — for the 10 Argus-authored
-rules, which embed `x-example-match`/`x-example-safe` fixtures — asserts
-each one matches what it claims to and doesn't match its benign lookalikes.
-That's the rule-count-scales replacement for the old "one hardcoded Swift
-sample per rule" pattern, which stopped being practical once the catalog
-grew past 20. Also covered: `RuleStoreTests` (enable/disable persistence,
-user-rule loading), the allowlist, event history persistence/trimming, the
-event feed's filter logic, history aggregation, and settings persistence.
+fetched from SigmaHQ (including the `N of selection_*` quantifier, `base64`/
+`base64offset`/`cased` modifiers, and keyword matching), and `BundledRulesTests`
+loads all 85 shipped rule files, asserts structural invariants, and — for the
+10 Argus-authored rules — verifies they match what they claim to. Also
+covered: `RuleStoreTests` (enable/disable persistence, user-rule loading),
+`ProcessMonitorTests` (parent-context caching, sampling health tracking),
+`AllowlistTests`, `EventStoreTests`, `EventFilterTests`, `HistoryStatsTests`,
+`AppSettingsTests`, `EventExportTests` (JSON and CSV serialization),
+`ChainCorrelatorTests` (sequence detection), `PersistenceWatcherTests`
+(artifact diffing and event generation), and `IntegrityGuardTests` (MAC
+recording and verification).
 
 ## Project layout
 
@@ -203,18 +265,25 @@ Sources/Argus/
     YAMLValue.swift               minimal YAML document tree
     YAMLParser.swift              hand-rolled block-YAML parser
     SigmaRule.swift                rule model + YAML→model mapping
-    SigmaCondition.swift           condition-language parser/evaluator
-    SigmaMatcher.swift             field/selection matching against a process record
-    RuleStore.swift                loads bundled + user rules, enable/disable persistence
+    SigmaCondition.swift           condition-language parser/evaluator (N of, all of)
+    SigmaMatcher.swift             field/selection matching (base64, base64offset, cased)
+    RuleStore.swift                loads bundled + user rules, enable/disable, skip count
   ProcessMonitor.swift          ps polling, diffing, risk-score decay, Sigma matching
+  ParentContextCache.swift      cross-tick parent lineage resolution
+  SamplingHealthTracker.swift   monitors consecutive failures, degraded state
+  ChainCorrelator.swift         correlates techniques in same process tree (10-min window)
+  PersistenceWatcher.swift      event-driven monitoring of LaunchAgents/Daemons/periodic
+  IntegrityGuard.swift          HMAC verification of rules-state.json and allowlist.json
   AllowlistStore.swift          persisted (rule, executable) suppression
   EventStore.swift              persisted event history (events.jsonl)
   EventFilter.swift             search/severity/session filter logic
-  HistoryStats.swift             day-bucketing + technique-frequency aggregation
-  AppSettings.swift              tunable poll interval, decay, notification threshold
-  NotificationManager.swift      thin UNUserNotificationCenter wrapper
+  EventExport.swift             JSON and RFC 4180-quoted CSV serialization
+  HistoryStats.swift            day-bucketing + technique-frequency aggregation
+  AppSettings.swift             tunable poll interval, decay, notification threshold
+  NotificationManager.swift     UNUserNotificationCenter wrapper
+  NotificationResponder.swift   notification actions (Show in Argus, Allowlist)
   DiagnosticsLog.swift          on-disk activity log
-  Theme.swift                  color/type tokens
+  Theme.swift                   color/type tokens
   OrbitView.swift               Canvas-based radial visualization
   GaugeView.swift               arced risk meter
   SparklineView.swift           activity histogram
@@ -227,8 +296,13 @@ Tests/ArgusTests/
   AllowlistTests.swift           filter logic + persistence round-trip
   EventStoreTests.swift          history persistence + trimming
   EventFilterTests.swift         search/severity/session filter logic
+  EventExportTests.swift         JSON/CSV serialization round-trip
   HistoryStatsTests.swift        day-bucketing + technique-frequency aggregation
   AppSettingsTests.swift         settings persistence/clamping + notification-threshold logic
+  ProcessMonitorTests.swift      parent-context caching, health tracking
+  ChainCorrelatorTests.swift     sequence detection in process trees
+  PersistenceWatcherTests.swift  artifact diffing and event generation
+  IntegrityGuardTests.swift      MAC recording and verification
 Resources/
   Info.plist                   app bundle metadata
   icon_gen.swift                generates the app icon programmatically
@@ -238,7 +312,11 @@ Resources/
     imported/                     67 rules verbatim from SigmaHQ macOS process_creation
     imported-portable/            8 rules verbatim from SigmaHQ Linux process_creation (portable shell techniques)
     custom/                       10 rules authored for Argus, filling gaps in the imported sets
-scripts/build_app.sh            release build → signed .app bundle (bundles Resources/Rules)
+scripts/
+  build_app.sh                  release build → signed .app bundle (bundles Resources/Rules)
+  sync_sigma_rules.sh           manual dev tool to refresh bundled SigmaHQ rules from upstream
+.github/workflows/
+  ci.yml                        runs swift test + app build on every push/PR
 ```
 
 ## Non-goals
