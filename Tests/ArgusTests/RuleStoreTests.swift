@@ -196,6 +196,98 @@ final class RuleStoreTests: XCTestCase {
         store.toggle(store.rules[0])
         XCTAssertEqual(fixedKeyGuard.verify(state), .verified, "saveDisabledState should have recorded a MAC via the injected guard")
     }
+    // MARK: - Supersession
+
+    private static let supersededImportedID = "f5141b6d-9f42-41c6-a7bf-2a780678b29b"
+
+    /// Bundled/user directories, not yet turned into a `RuleStore`, whose
+    /// "imported" folder carries a stand-in for the real SigmaHQ xattr rule
+    /// (same `id` as the real one — content otherwise irrelevant) so
+    /// `RuleStore.applySupersessions()`'s loaded-rule-presence gate lets the
+    /// supersession fire, mirroring what the real bundle looks like.
+    private func makeDirsWithImportedGatekeeperRule() -> (bundled: URL, user: URL, state: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bundled = root.appendingPathComponent("bundled")
+        let user = root.appendingPathComponent("user")
+        let state = root.appendingPathComponent("rules-state.json")
+        try? FileManager.default.createDirectory(at: bundled.appendingPathComponent("custom"), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: bundled.appendingPathComponent("imported"), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: bundled.appendingPathComponent("imported-portable"), withIntermediateDirectories: true)
+
+        let importedRule = """
+        title: Gatekeeper Bypass via Xattr
+        id: \(Self.supersededImportedID)
+        status: test
+        description: Detects macOS Gatekeeper bypass via xattr utility
+        author: Test
+        date: 2026-08-21
+        tags:
+            - attack.defense-impairment
+            - attack.t1553.001
+        logsource:
+            category: process_creation
+            product: macos
+        detection:
+            selection:
+                Image|endswith: '/xattr'
+                CommandLine|contains|all:
+                    - '-d'
+                    - 'com.apple.quarantine'
+            condition: selection
+        level: low
+        """
+        try? importedRule.write(to: bundled.appendingPathComponent("imported/xattr.yml"), atomically: true, encoding: .utf8)
+        return (bundled, user, state)
+    }
+
+    func testSupersessionDisablesImportedRuleOnFirstLoadAndRecordsApplied() {
+        let (bundled, user, state) = makeDirsWithImportedGatekeeperRule()
+        let store = RuleStore(bundledRulesDirectory: bundled, userRulesDirectory: user, stateFileURL: state)
+
+        XCTAssertTrue(store.disabledRuleIDs.contains(Self.supersededImportedID),
+                       "the superseded imported rule should be auto-disabled on first load")
+
+        guard let data = try? Data(contentsOf: state),
+              let decoded = try? JSONDecoder().decode(RuleDisabledStateForTests.self, from: data) else {
+            XCTFail("expected a persisted rules-state.json after supersession ran")
+            return
+        }
+        XCTAssertTrue(decoded.disabled.contains(Self.supersededImportedID))
+        XCTAssertTrue(decoded.supersessionsApplied.contains(Self.supersededImportedID),
+                       "the supersession should be recorded as applied so it isn't redone if the user re-enables the rule")
+    }
+
+    func testReenabledSupersededRuleStaysEnabledAcrossReload() {
+        let (bundled, user, state) = makeDirsWithImportedGatekeeperRule()
+        // Simulate a prior launch where supersession already ran, and the
+        // user then deliberately re-enabled the imported rule (removing it
+        // from `disabled` without clearing the `supersessionsApplied` marker).
+        let priorState = RuleDisabledStateForTests(disabled: [], supersessionsApplied: [Self.supersededImportedID])
+        if let encoded = try? JSONEncoder().encode(priorState) {
+            try? encoded.write(to: state)
+        }
+
+        let store = RuleStore(bundledRulesDirectory: bundled, userRulesDirectory: user, stateFileURL: state)
+
+        XCTAssertFalse(store.disabledRuleIDs.contains(Self.supersededImportedID),
+                        "a user-re-enabled superseded rule should not be disabled again on reload")
+    }
+
+    func testLegacyBareSetStateFileStillDecodesAndSupersessionAppliesOnTop() {
+        let (bundled, user, state) = makeDirsWithImportedGatekeeperRule()
+        // Pre-supersession on-disk format: a bare JSON array of disabled IDs.
+        let legacyDisabledID = "some-other-rule-id"
+        if let encoded = try? JSONEncoder().encode([legacyDisabledID]) {
+            try? encoded.write(to: state)
+        }
+
+        let store = RuleStore(bundledRulesDirectory: bundled, userRulesDirectory: user, stateFileURL: state)
+
+        XCTAssertTrue(store.disabledRuleIDs.contains(legacyDisabledID),
+                       "existing disabled ids from a legacy bare-Set state file should be preserved")
+        XCTAssertTrue(store.disabledRuleIDs.contains(Self.supersededImportedID),
+                       "supersession should still apply on top of a migrated legacy state file")
+    }
 }
 
 /// Local fixed-key provider so this test doesn't depend on
@@ -203,4 +295,11 @@ final class RuleStoreTests: XCTestCase {
 private struct FixedKeyProviderForTests: IntegrityKeyProvider {
     let data: Data?
     func key() -> Data? { data }
+}
+
+/// Mirrors `RuleStore`'s private on-disk state shape so these tests can
+/// decode/encode `rules-state.json` without exposing that type.
+private struct RuleDisabledStateForTests: Codable {
+    var disabled: [String]
+    var supersessionsApplied: [String]
 }

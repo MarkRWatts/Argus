@@ -34,10 +34,10 @@ final class BundledRulesTests: XCTestCase {
     }
 
     func testExpectedRuleCount() {
-        // 67 SigmaHQ macOS + 8 SigmaHQ portable-shell + 10 Argus custom = 85.
+        // 67 SigmaHQ macOS + 8 SigmaHQ portable-shell + 11 Argus custom = 86.
         // A specific number, not a >0 check, so silently losing a whole
         // directory of rules (bad bundle path, parse regression) fails loudly.
-        XCTAssertEqual(Self.allRules.count, 85, "rule count changed — update this if the change was deliberate")
+        XCTAssertEqual(Self.allRules.count, 86, "rule count changed — update this if the change was deliberate")
     }
 
     func testEveryRuleHasNonEmptyConditionAndDetection() {
