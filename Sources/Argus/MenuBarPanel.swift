@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Compact popover shown from the menu bar item — glanceable posture without
 /// opening the full dashboard window.
+@MainActor
 struct MenuBarPanel: View {
     @ObservedObject var monitor: ProcessMonitor
     var dismissFlyout: () -> Void = {}

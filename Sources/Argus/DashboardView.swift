@@ -2,6 +2,7 @@ import SwiftUI
 import ServiceManagement
 import UniformTypeIdentifiers
 
+@MainActor
 struct DashboardView: View {
     @ObservedObject var monitor: ProcessMonitor
     @ObservedObject var allowlist: AllowlistStore
@@ -411,6 +412,7 @@ struct DashboardView: View {
     }
 }
 
+@MainActor
 struct EventRow: View {
     let event: ProcessEvent
     let allowlist: AllowlistStore
@@ -548,6 +550,7 @@ struct EventRow: View {
 /// SigmaHQ, or authored for Argus in the same format), individually
 /// toggleable, with its raw YAML source viewable inline. Drop a `.yml` file
 /// into the user rules folder and hit reload — no rebuild required.
+@MainActor
 struct RuleManagementPanel: View {
     @ObservedObject var ruleStore: RuleStore
     @State private var searchText = ""
@@ -674,6 +677,7 @@ struct RuleManagementPanel: View {
     }
 }
 
+@MainActor
 struct RuleManagementRow: View {
     let rule: SigmaRule
     let isEnabled: Bool
@@ -754,6 +758,7 @@ struct RuleManagementRow: View {
 /// Popover from the header's "ALLOWLISTED" stat — review and revoke
 /// suppression rules. Nothing here is hidden: every automatic suppression
 /// is a decision the user made explicitly by right-clicking an event.
+@MainActor
 struct AllowlistPanel: View {
     @ObservedObject var allowlist: AllowlistStore
 
@@ -793,7 +798,8 @@ struct AllowlistPanel: View {
     }
 }
 
-private struct AllowlistRow: View {
+private @MainActor
+struct AllowlistRow: View {
     let entry: AllowlistEntry
     let dateFormatter: DateFormatter
     let onRemove: (@escaping (Bool) -> Void) -> Void
@@ -850,6 +856,7 @@ private struct AllowlistRow: View {
 /// Popover from the header's "HISTORY" stat — a day-by-day activity heatmap
 /// (last ~12 weeks) plus which techniques have fired most. Reads the full
 /// persisted log once when opened rather than on every dashboard tick.
+@MainActor
 struct HistoryPanel: View {
     let eventStore: EventStore
     @State private var events: [ProcessEvent] = []
@@ -1034,6 +1041,7 @@ struct HistoryPanel: View {
 /// hardcoded constants before this — genuinely a matter of taste (how
 /// twitchy vs. how patient the gauge should be), so they're exposed here
 /// rather than fixed in code.
+@MainActor
 struct SettingsPanel: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var monitor: ProcessMonitor
