@@ -2,12 +2,13 @@ import XCTest
 @testable import Argus
 
 final class EventFilterTests: XCTestCase {
-    private func event(pid: Int32, ppid: Int32, executable: String, severity: Severity, technique: String, command: String? = nil) -> ProcessEvent {
+    private func event(pid: Int32, ppid: Int32, executable: String, severity: Severity, technique: String, command: String? = nil, provenance: [String] = []) -> ProcessEvent {
         ProcessEvent(
             pid: pid, ppid: ppid, executable: executable,
             command: command ?? "\(executable) some args",
             rules: [MatchedRule(name: "rule-\(technique)", severity: severity, technique: technique, explanation: "e")],
-            timestamp: Date()
+            timestamp: Date(),
+            provenance: provenance
         )
     }
 
@@ -46,6 +47,17 @@ final class EventFilterTests: XCTestCase {
         ]
         let filtered = EventFilter.apply(events, searchText: "", severities: Set(Severity.allCases), sessionPPID: 100)
         XCTAssertEqual(Set(filtered.map(\.pid)), [1, 2])
+    }
+
+    func testSearchMatchesProvenanceLabel() {
+        let events = [
+            event(pid: 1, ppid: 10, executable: "python3", severity: .critical, technique: "T1", provenance: ["claude"]),
+            event(pid: 2, ppid: 10, executable: "curl", severity: .critical, technique: "T2", provenance: ["docker"]),
+            event(pid: 3, ppid: 10, executable: "nc", severity: .critical, technique: "T3"),
+        ]
+        XCTAssertEqual(EventFilter.apply(events, searchText: "claude", severities: Set(Severity.allCases), sessionPPID: nil).map(\.pid), [1])
+        XCTAssertEqual(EventFilter.apply(events, searchText: "CLAU", severities: Set(Severity.allCases), sessionPPID: nil).map(\.pid), [1], "search should be case-insensitive")
+        XCTAssertEqual(EventFilter.apply(events, searchText: "docker", severities: Set(Severity.allCases), sessionPPID: nil).map(\.pid), [2])
     }
 
     func testFiltersCombine() {

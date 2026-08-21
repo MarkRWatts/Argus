@@ -40,6 +40,19 @@ final class AppSettings: ObservableObject {
     @Published var notificationThreshold: NotificationThreshold {
         didSet { defaults.set(notificationThreshold.rawValue, forKey: Keys.notificationThreshold) }
     }
+    /// When true (the default), a `.routine` agent-attributed event — see
+    /// `AgentActivityPolicy.Assessment` — skips the system notification it
+    /// would otherwise have earned under `notificationThreshold`. Nothing
+    /// else about the event changes: it still lands in the feed, history,
+    /// and risk score exactly as usual, and a `.sensitive` agent-attributed
+    /// event is never quieted regardless of this setting. Default true
+    /// because routine agent activity (an AI coding session reading files,
+    /// running builds) is expected to be frequent and is already
+    /// distinguishable in the feed via its provenance tag — the interrupt
+    /// is what this setting turns down, not the record.
+    @Published var quietAgentNotifications: Bool {
+        didSet { defaults.set(quietAgentNotifications, forKey: Keys.quietAgentNotifications) }
+    }
 
     private let defaults: UserDefaults
 
@@ -50,6 +63,7 @@ final class AppSettings: ObservableObject {
         static let pollInterval = "argus.pollIntervalSeconds"
         static let decayHalfLife = "argus.riskDecayHalfLifeSeconds"
         static let notificationThreshold = "argus.notificationThreshold"
+        static let quietAgentNotifications = "argus.quietAgentNotifications"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -65,6 +79,12 @@ final class AppSettings: ObservableObject {
             self.notificationThreshold = threshold
         } else {
             self.notificationThreshold = .criticalOnly
+        }
+
+        if let stored = defaults.object(forKey: Keys.quietAgentNotifications) as? Bool {
+            self.quietAgentNotifications = stored
+        } else {
+            self.quietAgentNotifications = true
         }
     }
 

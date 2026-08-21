@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Compact popover shown from the menu bar item — glanceable posture without
 /// opening the full dashboard window.
+@MainActor
 struct MenuBarPanel: View {
     @ObservedObject var monitor: ProcessMonitor
     var dismissFlyout: () -> Void = {}
@@ -19,6 +20,17 @@ struct MenuBarPanel: View {
                 Text(monitor.riskLevel.label)
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Theme.color(for: monitor.riskLevel))
+            }
+
+            if monitor.isDegraded {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text("Monitor degraded — process sampling is failing")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.color(for: .elevated))
             }
 
             GaugeView(score: monitor.riskScore, level: monitor.riskLevel)

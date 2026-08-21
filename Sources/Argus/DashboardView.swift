@@ -1,5 +1,8 @@
 import SwiftUI
+import ServiceManagement
+import UniformTypeIdentifiers
 
+@MainActor
 struct DashboardView: View {
     @ObservedObject var monitor: ProcessMonitor
     @ObservedObject var allowlist: AllowlistStore
@@ -58,6 +61,9 @@ struct DashboardView: View {
             }
             Spacer()
             HStack(spacing: 10) {
+                if monitor.isDegraded {
+                    degradedBadge
+                }
                 statField(label: "PROCESSES SEEN", value: "\(monitor.totalSeen)")
                 statField(label: "SAMPLES", value: "\(monitor.sampleCount)")
 
@@ -109,7 +115,7 @@ struct DashboardView: View {
                 .buttonStyle(.plain)
                 .help("Settings — poll interval, risk decay, notifications")
                 .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
-                    SettingsPanel(settings: settings)
+                    SettingsPanel(settings: settings, monitor: monitor)
                 }
             }
         }
@@ -129,6 +135,30 @@ struct DashboardView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+    }
+
+    /// Shown in the header only while `ProcessMonitor.isDegraded` is true —
+    /// i.e. `ps` sampling has failed repeatedly and the process table view
+    /// is stale. A hung/missing sampler must not look identical to "nothing
+    /// suspicious happening", so this sits right next to the stats it would
+    /// otherwise silently undermine.
+    private var degradedBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+            Text("MONITOR DEGRADED")
+                .font(.system(size: 9, weight: .bold))
+                .tracking(1)
+        }
+        .foregroundStyle(Theme.color(for: .elevated))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Theme.color(for: .elevated).opacity(0.12))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.color(for: .elevated).opacity(0.4), lineWidth: 1))
+        )
+        .help("Process sampling has failed repeatedly — the data shown here may be stale.")
     }
 
     /// Same shape as `statField`, but visibly a control: bordered chip, a
@@ -302,7 +332,7 @@ struct DashboardView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.dim)
-                TextField("Search executable, command, or technique…", text: $searchText)
+                TextField("Search executable, command, technique, or supervisor…", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(Theme.mono(11))
                 if !searchText.isEmpty {
@@ -382,6 +412,7 @@ struct DashboardView: View {
     }
 }
 
+@MainActor
 struct EventRow: View {
     let event: ProcessEvent
     let allowlist: AllowlistStore
@@ -420,6 +451,10 @@ struct EventRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Show every event sharing this process's parent (pid \(event.ppid))")
+
+                if !event.provenance.isEmpty {
+                    provenanceBadge
+                }
 
                 Spacer()
                 ForEach(event.rules.prefix(expanded ? event.rules.count : 1)) { rule in
@@ -468,8 +503,45 @@ struct EventRow: View {
                 Button("Allow future \u{201c}\(rule.name)\u{201d} alerts from \(event.executable)") {
                     allowlist.requestAllow(ruleName: rule.name, executable: event.executable)
                 }
+                // Scoped alternatives, one per supervisor label on this
+                // event (capped at 2, mirroring `provenanceBadge`) — lets
+                // the user narrow the allowlist to "only under claude"
+                // instead of blinding the rule for this executable
+                // everywhere.
+                ForEach(event.provenance.prefix(2), id: \.self) { label in
+                    Button("Allow only when under \(label)") {
+                        allowlist.requestAllow(ruleName: rule.name, executable: event.executable, requiredProvenance: label)
+                    }
+                }
+            }
+            Divider()
+            Button("Copy as JSON") {
+                guard let json = EventExport.json(for: event) else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(json, forType: .string)
             }
         }
+    }
+
+    /// "via claude"-style chip surfacing `ProcessEvent.provenance` — capped
+    /// to the first two labels so a deep, multi-supervisor ancestry (e.g.
+    /// Claude inside a terminal inside tmux) doesn't crowd out the rule
+    /// chips it sits beside. Rendered in `Theme.provenance` (violet, a hue
+    /// the severity palette never uses) so attribution is easy to spot at a
+    /// glance yet can't be mistaken for a severity signal — see
+    /// `ProvenanceTag`'s doc comment.
+    private var provenanceBadge: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "arrowshape.turn.up.left")
+                .font(.system(size: 8, weight: .semibold))
+            Text("via \(event.provenance.prefix(2).joined(separator: ", "))")
+                .font(.system(size: 9, weight: .semibold))
+        }
+        .foregroundStyle(Theme.provenance)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Theme.provenance.opacity(0.14))
+        .clipShape(Capsule())
+        .help("Ancestry attribution, not authorization — process ancestry can be spoofed; this is triage context only.")
     }
 }
 
@@ -478,6 +550,7 @@ struct EventRow: View {
 /// SigmaHQ, or authored for Argus in the same format), individually
 /// toggleable, with its raw YAML source viewable inline. Drop a `.yml` file
 /// into the user rules folder and hit reload — no rebuild required.
+@MainActor
 struct RuleManagementPanel: View {
     @ObservedObject var ruleStore: RuleStore
     @State private var searchText = ""
@@ -571,6 +644,12 @@ struct RuleManagementPanel: View {
                 .font(.system(size: 10.5))
                 .foregroundStyle(Theme.accent)
             }
+
+            if ruleStore.skippedIncompatibleCount > 0 {
+                Text("\(ruleStore.skippedIncompatibleCount) rules skipped (not macOS process_creation)")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.dim)
+            }
         }
         .padding(14)
         .frame(width: 420)
@@ -598,6 +677,7 @@ struct RuleManagementPanel: View {
     }
 }
 
+@MainActor
 struct RuleManagementRow: View {
     let rule: SigmaRule
     let isEnabled: Bool
@@ -678,6 +758,7 @@ struct RuleManagementRow: View {
 /// Popover from the header's "ALLOWLISTED" stat — review and revoke
 /// suppression rules. Nothing here is hidden: every automatic suppression
 /// is a decision the user made explicitly by right-clicking an event.
+@MainActor
 struct AllowlistPanel: View {
     @ObservedObject var allowlist: AllowlistStore
 
@@ -717,6 +798,7 @@ struct AllowlistPanel: View {
     }
 }
 
+@MainActor
 private struct AllowlistRow: View {
     let entry: AllowlistEntry
     let dateFormatter: DateFormatter
@@ -726,8 +808,13 @@ private struct AllowlistRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.ruleName)
-                    .font(Theme.mono(11, weight: .semibold))
+                HStack(spacing: 5) {
+                    Text(entry.ruleName)
+                        .font(Theme.mono(11, weight: .semibold))
+                    if let requiredProvenance = entry.requiredProvenance {
+                        scopeChip(requiredProvenance)
+                    }
+                }
                 Text("\(entry.executable) · since \(dateFormatter.string(from: entry.createdAt))")
                     .font(.system(size: 9))
                     .foregroundStyle(Theme.dim)
@@ -751,11 +838,25 @@ private struct AllowlistRow: View {
             .help("Revoke this allowlist entry (Touch ID/password required)")
         }
     }
+
+    /// "only under <label>" chip, styled like `EventRow.provenanceBadge`
+    /// (same `Theme.provenance` violet) so the scope reads as the same kind
+    /// of attribution context there and here rather than a second,
+    /// inconsistent visual language.
+    private func scopeChip(_ label: String) -> some View {
+        Text("only under \(label)")
+            .font(.system(size: 8.5, weight: .medium))
+            .foregroundStyle(Theme.provenance)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Theme.provenance.opacity(0.14))
+            .clipShape(Capsule())
+    }
 }
 
 /// Popover from the header's "HISTORY" stat — a day-by-day activity heatmap
 /// (last ~12 weeks) plus which techniques have fired most. Reads the full
 /// persisted log once when opened rather than on every dashboard tick.
+@MainActor
 struct HistoryPanel: View {
     let eventStore: EventStore
     @State private var events: [ProcessEvent] = []
@@ -765,10 +866,14 @@ struct HistoryPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("ACTIVITY HISTORY")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1.5)
-                .foregroundStyle(Theme.muted)
+            HStack {
+                Text("ACTIVITY HISTORY")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.5)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                exportMenu
+            }
 
             if events.isEmpty {
                 Text("No history yet — matched events accumulate here as Argus runs, and survive a restart.")
@@ -802,6 +907,68 @@ struct HistoryPanel: View {
         .foregroundStyle(Theme.text)
         .onAppear {
             events = eventStore.loadAll()
+        }
+    }
+
+    /// Dropdown rather than a plain button since there are two formats to
+    /// choose between — kept visually lightweight (borderless, small type)
+    /// to match the plain-text "Rules folder"/"Reload" controls elsewhere in
+    /// these popovers rather than looking like a primary action.
+    private var exportMenu: some View {
+        Menu {
+            Button("Export as JSON…") { exportHistory(as: .json) }
+            Button("Export as CSV…") { exportHistory(as: .csv) }
+        } label: {
+            Label("Export…", systemImage: "square.and.arrow.up")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(events.isEmpty)
+    }
+
+    private enum ExportFormat: String { case json = "JSON", csv = "CSV" }
+
+    /// Snapshots `eventStore.loadAll()` up front (not inside the save
+    /// panel's completion handler) so the exported data reflects what the
+    /// user saw when they clicked "Export…", and so encoding happens on the
+    /// main actor where `EventStore` and this view already live — the save
+    /// panel's completion handler itself only ever touches plain `Data`/
+    /// `URL` values. Write failures are logged, never surfaced as a crash —
+    /// exporting evidence is a nice-to-have, not something that should take
+    /// the app down if e.g. the destination volume went away mid-write.
+    ///
+    /// Explicitly `@MainActor`: `EventStore` and `NSSavePanel` both require
+    /// it, and while newer compilers infer it here from the enclosing View,
+    /// the CI toolchain's does not — the annotation keeps the isolation
+    /// identical on both.
+    @MainActor
+    private func exportHistory(as format: ExportFormat) {
+        let all = eventStore.loadAll()
+        let panel = NSSavePanel()
+        let data: Data?
+        switch format {
+        case .json:
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "argus-events.json"
+            data = EventExport.json(events: all)
+        case .csv:
+            panel.allowedContentTypes = [.commaSeparatedText]
+            panel.nameFieldStringValue = "argus-events.csv"
+            data = EventExport.csv(events: all).data(using: .utf8)
+        }
+        guard let data else {
+            DiagnosticsLog.write("history export failed: could not encode events as \(format.rawValue)")
+            return
+        }
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                DiagnosticsLog.write("history export failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -874,8 +1041,11 @@ struct HistoryPanel: View {
 /// hardcoded constants before this — genuinely a matter of taste (how
 /// twitchy vs. how patient the gauge should be), so they're exposed here
 /// rather than fixed in code.
+@MainActor
 struct SettingsPanel: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject var monitor: ProcessMonitor
+    @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -937,10 +1107,81 @@ struct SettingsPanel: View {
                     }
                 }
             }
+
+            Divider().background(Theme.border)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: launchAtLoginBinding) {
+                    Text("Launch at login")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.text)
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+                Text("A monitor only protects you while it's running — enable this so Argus starts watching as soon as you log in.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
+
+            Divider().background(Theme.border)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: $settings.quietAgentNotifications) {
+                    Text("Quiet notifications for routine AI-agent activity")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.text)
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+                Text(quietAgentCaption)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
         }
         .padding(14)
         .frame(width: 300)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
+    }
+
+    /// Spells out exactly what the toggle above does and doesn't affect —
+    /// feed/history/risk/log are unconditional, only the system notification
+    /// for a *routine* agent-attributed event is skipped, never a sensitive
+    /// one — plus a running count once anything has actually been quieted
+    /// this session, so the setting's effect is visible, not just claimed.
+    private var quietAgentCaption: String {
+        let base = "Feed, history, risk score, and the diagnostics log are unaffected — only the "
+            + "system notification is skipped, and only for routine AI-agent activity. Activity "
+            + "matching a sensitive technique (persistence, credential access, defense evasion) "
+            + "always notifies at the normal threshold."
+        guard monitor.agentQuietedNotificationCount > 0 else { return base }
+        let count = monitor.agentQuietedNotificationCount
+        return base + " \(count) notification\(count == 1 ? "" : "s") quieted this session."
+    }
+
+    /// `SMAppService` is the source of truth for launch-at-login state —
+    /// it's deliberately not mirrored into `AppSettings`/UserDefaults, so
+    /// there's nothing that can drift out of sync with it. Registration is
+    /// best-effort: on failure (including the expected case of an
+    /// un-bundled `swift test`/debug run, where `SMAppService` has no real
+    /// app bundle to register) we log via `DiagnosticsLog` and snap the
+    /// toggle back to the prior state rather than crash or claim success.
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchAtLoginEnabled },
+            set: { newValue in
+                launchAtLoginEnabled = newValue
+                do {
+                    if newValue {
+                        try SMAppService.mainApp.register()
+                    } else {
+                        try SMAppService.mainApp.unregister()
+                    }
+                } catch {
+                    DiagnosticsLog.write("launch-at-login \(newValue ? "register" : "unregister") failed: \(error.localizedDescription)")
+                    launchAtLoginEnabled = !newValue
+                }
+            }
+        )
     }
 }

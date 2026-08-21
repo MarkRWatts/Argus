@@ -31,6 +31,15 @@ struct SigmaFieldMatch {
     /// matching runs against every new process every poll — and means a
     /// malformed pattern fails once at load rather than silently per tick.
     let regexes: [NSRegularExpression?]
+    /// `value` base64-encoded, aligned index-for-index with `values`,
+    /// populated only when the `base64` modifier is present. Precomputed at
+    /// load time for the same reason as `regexes`.
+    let base64Values: [String]
+    /// The three possible base64 encodings of `value` at byte offsets 0, 1,
+    /// and 2 (see `SigmaRule.base64OffsetEncodings`), aligned index-for-index
+    /// with `values`, populated only when the `base64offset` modifier is
+    /// present.
+    let base64OffsetValues: [[String]]
 }
 
 enum SigmaSelectionItem {
@@ -180,10 +189,58 @@ struct SigmaRule: Identifiable {
         guard let field = parts.first else { return nil }
         let modifiers = Array(parts.dropFirst())
         let values = pair.value.stringList
-        let isRegex = modifiers.contains { $0.lowercased() == "re" }
+        let lowerMods = Set(modifiers.map { $0.lowercased() })
+        let isRegex = lowerMods.contains("re")
         let regexes: [NSRegularExpression?] = isRegex
             ? values.map { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
             : []
-        return SigmaFieldMatch(field: field, modifiers: modifiers, values: values, regexes: regexes)
+        let base64Values: [String] = lowerMods.contains("base64")
+            ? values.map { Data($0.utf8).base64EncodedString() }
+            : []
+        let base64OffsetValues: [[String]] = lowerMods.contains("base64offset")
+            ? values.map { base64OffsetEncodings(of: $0) }
+            : []
+        return SigmaFieldMatch(
+            field: field,
+            modifiers: modifiers,
+            values: values,
+            regexes: regexes,
+            base64Values: base64Values,
+            base64OffsetValues: base64OffsetValues
+        )
+    }
+
+    /// The three base64 encodings of `value` as it would appear inside a
+    /// larger base64-encoded byte stream, if `value` began at a byte offset
+    /// of 0, 1, or 2 within a 3-byte alignment group. Follows the reference
+    /// `base64offset` algorithm: pad with `i` NUL bytes so `value` lands on
+    /// a 3-byte boundary, base64-encode, then drop the leading characters
+    /// that only ever encode the padding, and the trailing characters that
+    /// only ever encode padding introduced by `value` itself falling short
+    /// of the next 3-byte boundary.
+    static func base64OffsetEncodings(of value: String) -> [String] {
+        let bytes = Array(value.utf8)
+        let startOffsets = [0, 2, 3]
+        return (0..<3).map { i -> String in
+            let padded = Data(repeating: 0, count: i) + Data(bytes)
+            let encoded = padded.base64EncodedString()
+            let start = min(startOffsets[i], encoded.count)
+            let remainder = (bytes.count + i) % 3
+            // A final group of 1 dangling byte encodes as "XY==" where Y
+            // carries only 2 real bits — drop 3 chars; 2 dangling bytes
+            // encode as "XYZ=" where Z carries only 4 real bits — drop 2.
+            // (Matches the reference implementation's end_offsets of
+            // (None, -3, -2) indexed by (len + i) % 3.)
+            let endTrim: Int
+            switch remainder {
+            case 1: endTrim = 3
+            case 2: endTrim = 2
+            default: endTrim = 0
+            }
+            let startIndex = encoded.index(encoded.startIndex, offsetBy: start)
+            let endOffset = max(start, encoded.count - endTrim)
+            let endIndex = encoded.index(encoded.startIndex, offsetBy: endOffset)
+            return startIndex < endIndex ? String(encoded[startIndex..<endIndex]) : ""
+        }
     }
 }

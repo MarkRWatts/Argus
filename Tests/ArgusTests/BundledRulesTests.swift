@@ -23,9 +23,9 @@ final class BundledRulesTests: XCTestCase {
 
     private static let allRules: [SigmaRule] = {
         var rules: [SigmaRule] = []
-        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported"), origin: .sigmaHQMacOS)
-        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported-portable"), origin: .sigmaHQPortable)
-        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("custom"), origin: .custom)
+        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported"), origin: .sigmaHQMacOS).rules
+        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported-portable"), origin: .sigmaHQPortable).rules
+        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("custom"), origin: .custom).rules
         return rules
     }()
 
@@ -34,10 +34,10 @@ final class BundledRulesTests: XCTestCase {
     }
 
     func testExpectedRuleCount() {
-        // 67 SigmaHQ macOS + 8 SigmaHQ portable-shell + 10 Argus custom = 85.
+        // 67 SigmaHQ macOS + 8 SigmaHQ portable-shell + 11 Argus custom = 86.
         // A specific number, not a >0 check, so silently losing a whole
         // directory of rules (bad bundle path, parse regression) fails loudly.
-        XCTAssertEqual(Self.allRules.count, 85, "rule count changed — update this if the change was deliberate")
+        XCTAssertEqual(Self.allRules.count, 86, "rule count changed — update this if the change was deliberate")
     }
 
     func testEveryRuleHasNonEmptyConditionAndDetection() {
