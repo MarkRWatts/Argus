@@ -32,6 +32,8 @@ final class AllowlistStore: ObservableObject {
             let dir = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/Argus", isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // Keep the shared Argus support directory owner-only (see EventStore).
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
             self.fileURL = dir.appendingPathComponent("allowlist.json")
         }
         load()

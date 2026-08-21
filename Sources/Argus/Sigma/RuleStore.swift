@@ -25,6 +25,8 @@ final class RuleStore: ObservableObject {
         self.userRulesDirectory = userRulesDirectory ?? appSupport.appendingPathComponent("rules", isDirectory: true)
         self.stateFileURL = stateFileURL ?? appSupport.appendingPathComponent("rules-state.json")
         try? FileManager.default.createDirectory(at: self.userRulesDirectory, withIntermediateDirectories: true)
+        // Keep the shared Argus support directory owner-only (see EventStore).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupport.path)
 
         loadDisabledState()
         reload()

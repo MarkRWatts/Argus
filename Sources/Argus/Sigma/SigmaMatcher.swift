@@ -29,7 +29,10 @@ enum SigmaMatcher {
             let haystack = (record["CommandLine"] ?? "").lowercased()
             return words.contains { haystack.contains($0.lowercased()) }
         case .fields(let matches):
-            return matches.allSatisfy { evaluateFieldMatch($0, record: record) }
+            // A non-empty AND of field matches. Empty means every field in the
+            // group was dropped as malformed at parse time; treat that as a
+            // non-match rather than a vacuously-true match-everything.
+            return !matches.isEmpty && matches.allSatisfy { evaluateFieldMatch($0, record: record) }
         }
     }
 
@@ -38,9 +41,11 @@ enum SigmaMatcher {
         let haystack = record[match.field] ?? ""
         let mods = Set(match.modifiers.map { $0.lowercased() })
 
-        func test(_ value: String) -> Bool {
+        func test(_ index: Int, _ value: String) -> Bool {
             if mods.contains("re") {
-                guard let re = try? NSRegularExpression(pattern: value, options: [.caseInsensitive]) else { return false }
+                // Use the regex compiled once at load time (see parseFieldMatch);
+                // a nil entry means the pattern was invalid and never matches.
+                guard index < match.regexes.count, let re = match.regexes[index] else { return false }
                 let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
                 return re.firstMatch(in: haystack, options: [], range: range) != nil
             }
@@ -52,6 +57,9 @@ enum SigmaMatcher {
             return h == v
         }
 
-        return mods.contains("all") ? match.values.allSatisfy(test) : match.values.contains(where: test)
+        let indexed = Array(match.values.enumerated())
+        return mods.contains("all")
+            ? indexed.allSatisfy { test($0.offset, $0.element) }
+            : indexed.contains { test($0.offset, $0.element) }
     }
 }
