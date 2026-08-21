@@ -1,6 +1,20 @@
 import AppKit
 import Foundation
 
+/// On-disk shape of `rules-state.json`. `disabled` mirrors
+/// `RuleStore.disabledRuleIDs`; `supersessionsApplied` records which
+/// entries of `RuleStore.supersededBundledRuleIDs` have already been
+/// auto-applied, so a user who deliberately re-enables a superseded rule
+/// via the Touch ID-gated `requestToggle` has that stick across restarts
+/// instead of the rule being silently disabled again on the next launch.
+/// Older installs wrote this file as a bare `Set<String>` of disabled IDs —
+/// `RuleStore.loadDisabledState` falls back to that shape when this one
+/// fails to decode, treating `supersessionsApplied` as empty.
+private struct RuleDisabledState: Codable {
+    var disabled: [String]
+    var supersessionsApplied: [String]
+}
+
 /// Loads and manages the Sigma rule catalog: bundled rules shipped with the
 /// app (imported from SigmaHQ, plus Argus's own gap-filling rules) and
 /// user rules dropped into `~/Library/Application Support/Argus/rules/` —
@@ -9,8 +23,26 @@ import Foundation
 /// and hit reload.
 @MainActor
 final class RuleStore: ObservableObject {
+    /// Bundled imported rules superseded by a more precise Argus-authored
+    /// replacement — keyed by the superseded imported rule's `id`, valued
+    /// by the replacement's `id`. Applied once per entry (see
+    /// `supersessionsApplied` in `RuleDisabledState`) so re-enabling the
+    /// superseded rule by hand isn't undone on the next launch.
+    static let supersededBundledRuleIDs: [String: String] = [
+        // SigmaHQ "Gatekeeper Bypass via Xattr": CommandLine|contains|all
+        // of '-d' and 'com.apple.quarantine' can false-positive on the safe
+        // xattr -w (add-quarantine) direction Homebrew uses, when a '-d'
+        // substring lands inside the quarantine value's UUID by chance.
+        // Superseded by the whitespace-bounded-flag Argus rule, which tells
+        // removal (-d/-c) apart from addition (-w).
+        "f5141b6d-9f42-41c6-a7bf-2a780678b29b": "8cbd6022-931f-4017-ab5e-a15264ac91e7",
+    ]
+
     @Published private(set) var rules: [SigmaRule] = []
     @Published private(set) var disabledRuleIDs: Set<String> = []
+    /// Which entries of `supersededBundledRuleIDs` have already been
+    /// auto-disabled at some past launch — see `RuleDisabledState`.
+    private var supersessionsApplied: Set<String> = []
     /// Rules dropped at load time because their `logsource` isn't something
     /// this app can actually evaluate (see `isCompatibleLogsource`) — e.g. a
     /// Windows-only rule dropped into the user rules folder by mistake.
@@ -46,6 +78,7 @@ final class RuleStore: ObservableObject {
 
         loadDisabledState()
         reload()
+        applySupersessions()
     }
 
     /// Verifies `rules-state.json` off the main thread and stores the
@@ -161,14 +194,48 @@ final class RuleStore: ObservableObject {
         return categoryOK && productOK
     }
 
+    /// For each not-yet-applied entry in `supersededBundledRuleIDs` whose
+    /// superseded rule actually loaded (guards against disabling — and
+    /// writing state for — an id that isn't even part of this rule set, e.g.
+    /// a minimal test fixture or a build missing the imported directory),
+    /// disables the superseded rule and records the entry as applied. Only
+    /// once per entry, ever: a user who deliberately re-enables the
+    /// superseded rule afterward (Touch ID-gated `requestToggle`) keeps it
+    /// enabled across restarts, since `supersessionsApplied` already has
+    /// the entry and this loop skips it. Called after `reload()` so `rules`
+    /// is populated.
+    private func applySupersessions() {
+        let loadedRuleIDs = Set(rules.map(\.id))
+        var changed = false
+        for (supersededID, replacementID) in Self.supersededBundledRuleIDs {
+            guard loadedRuleIDs.contains(supersededID) else { continue }
+            guard !supersessionsApplied.contains(supersededID) else { continue }
+            disabledRuleIDs.insert(supersededID)
+            supersessionsApplied.insert(supersededID)
+            changed = true
+            DiagnosticsLog.write("rule auto-disabled (superseded by \(replacementID)): \(supersededID)")
+        }
+        if changed {
+            saveDisabledState()
+        }
+    }
+
     private func loadDisabledState() {
-        guard let data = try? Data(contentsOf: stateFileURL),
-              let decoded = try? JSONDecoder().decode(Set<String>.self, from: data) else { return }
-        disabledRuleIDs = decoded
+        guard let data = try? Data(contentsOf: stateFileURL) else { return }
+        if let decoded = try? JSONDecoder().decode(RuleDisabledState.self, from: data) {
+            disabledRuleIDs = Set(decoded.disabled)
+            supersessionsApplied = Set(decoded.supersessionsApplied)
+        } else if let legacy = try? JSONDecoder().decode(Set<String>.self, from: data) {
+            // Pre-supersession state file: just the disabled IDs, no record
+            // of which supersessions had already run.
+            disabledRuleIDs = legacy
+            supersessionsApplied = []
+        }
     }
 
     private func saveDisabledState() {
-        guard let data = try? JSONEncoder().encode(disabledRuleIDs) else { return }
+        let state = RuleDisabledState(disabled: Array(disabledRuleIDs), supersessionsApplied: Array(supersessionsApplied))
+        guard let data = try? JSONEncoder().encode(state) else { return }
         try? data.write(to: stateFileURL, options: .atomic)
         integrityGuard?.recordAuthenticatedWrite(of: stateFileURL)
     }
