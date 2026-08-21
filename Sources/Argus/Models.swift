@@ -49,6 +49,13 @@ struct RawProcess: Identifiable, Equatable {
     let ppid: Int32
     let command: String    // full command line
     let executable: String // short name, e.g. "curl"
+    /// Sigma's "Image" field, normalized to always end in "/<name>" even
+    /// when the process was launched with a bare command name (typing
+    /// `curl ...` at a shell reports argv[0] as literally "curl", not
+    /// "/usr/bin/curl" — verified empirically against this ps). Without
+    /// this normalization, every imported rule's `Image|endswith: '/curl'`
+    /// would silently never match ordinary typed shell usage.
+    let image: String
 }
 
 /// A process that tripped one or more rules — what the dashboard actually shows.

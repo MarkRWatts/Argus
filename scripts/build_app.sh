@@ -13,6 +13,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Argus "$APP/Contents/MacOS/Argus"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
+echo "==> bundling detection rules"
+mkdir -p "$APP/Contents/Resources/Rules"
+cp -R Resources/Rules/imported "$APP/Contents/Resources/Rules/imported"
+cp -R Resources/Rules/imported-portable "$APP/Contents/Resources/Rules/imported-portable"
+cp -R Resources/Rules/custom "$APP/Contents/Resources/Rules/custom"
+
 echo "==> generating app icon"
 ICONSET=$(mktemp -d)/AppIcon.iconset
 mkdir -p "$ICONSET"

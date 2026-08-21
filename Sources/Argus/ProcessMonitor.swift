@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// Polls the local process table, diffs it against the previous sample to find
-/// newly-spawned processes, and runs each one through the RuleEngine.
+/// newly-spawned processes, and runs each one through the active Sigma rules.
 ///
 /// This is deliberately poll-based rather than kernel-event-based: capturing
 /// true exec() events on macOS requires the `com.apple.developer.endpoint-security`
@@ -36,6 +36,7 @@ final class ProcessMonitor: ObservableObject {
     private var allowlist: AllowlistStore?
     private var eventStore: EventStore?
     private var settings: AppSettings?
+    private var ruleStore: RuleStore?
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private let defaultIntervalSeconds: Double = 1.2
     private let defaultHalfLifeSeconds: Double = 55.0
@@ -46,6 +47,10 @@ final class ProcessMonitor: ObservableObject {
 
     func configure(settings: AppSettings) {
         self.settings = settings
+    }
+
+    func configure(ruleStore: RuleStore) {
+        self.ruleStore = ruleStore
     }
 
     /// Loads recent persisted history into the live feed so a restart no
@@ -100,10 +105,30 @@ final class ProcessMonitor: ObservableObject {
             !knownPIDs.contains($0.id) && $0.id != ownPID && $0.ppid != ownPID
         }
 
+        // Full-sample lookup so a new process's ParentImage/ParentCommandLine
+        // can be resolved — several real Sigma rules key off parent context
+        // (e.g. "curl spawned by bash" is far more specific than "curl" alone).
+        var imageByPID: [Int32: String] = [:]
+        var commandByPID: [Int32: String] = [:]
+        for p in raw {
+            imageByPID[p.id] = p.image
+            commandByPID[p.id] = p.command
+        }
+
+        let activeRules = ruleStore?.activeRules ?? []
         var matchedThisTick = 0
         for proc in newProcs {
             totalSeen += 1
-            let rawMatches = RuleEngine.evaluate(proc.command)
+
+            var record: [String: String] = ["CommandLine": proc.command, "Image": proc.image]
+            if let parentImage = imageByPID[proc.ppid] { record["ParentImage"] = parentImage }
+            if let parentCommand = commandByPID[proc.ppid] { record["ParentCommandLine"] = parentCommand }
+
+            let rawMatches: [MatchedRule] = activeRules.compactMap { rule in
+                guard SigmaMatcher.matches(rule, record: record) else { return nil }
+                return MatchedRule(name: rule.title, severity: rule.severity, technique: rule.techniqueLabel,
+                                    explanation: rule.description ?? "")
+            }
             let matches: [MatchedRule]
             if let allowlist {
                 matches = AllowlistFilter.apply(rawMatches, executable: proc.executable, isAllowed: allowlist.isAllowed)
@@ -189,7 +214,8 @@ final class ProcessMonitor: ObservableObject {
             let command = String(parts[2])
             let firstToken = command.split(separator: " ").first.map(String.init) ?? command
             let short = (firstToken as NSString).lastPathComponent
-            results.append(RawProcess(id: pid, ppid: ppid, command: command, executable: short))
+            let image = firstToken.contains("/") ? firstToken : "/" + firstToken
+            results.append(RawProcess(id: pid, ppid: ppid, command: command, executable: short, image: image))
         }
         return results
     }

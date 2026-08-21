@@ -61,11 +61,8 @@ does not follow the system light/dark appearance toggle.
 
 `ProcessMonitor` samples `ps -axww -o pid,ppid,command` roughly every 1.2s
 and diffs it against the previous sample to find newly-spawned processes.
-Each new process's full command line is run through `RuleEngine`, a catalog
-of ~20 pattern rules covering macOS-specific LOLBin techniques (Gatekeeper
-bypass, keychain/cookie access, LaunchAgent persistence, account/SIP
-discovery, reverse-shell primitives, and more), each tagged with a severity
-and an informal MITRE ATT&CK-style technique label.
+Each new process is checked against every active rule; a match becomes an
+event with severity, a MITRE technique label, and an explanation.
 
 This is **polling-based, not kernel-event-based** — deliberately. True
 exec()-level capture on macOS requires the `endpoint-security` entitlement,
@@ -76,6 +73,48 @@ tool better than an enterprise agent. The tradeoff: a process that starts and
 exits within the ~1.2s window can be missed as an individual event (though a
 parent shell invoking it inline is still visible, since the parent's full
 command line is what `ps` reports).
+
+## Rule format and management
+
+Rules are [Sigma](https://github.com/SigmaHQ/sigma) — the open, vendor-
+neutral YAML format the wider detection-engineering community actually
+publishes in, rather than a bespoke format invented for this app. A rule is
+a `logsource` (we only match `category: process_creation`, `product: macos`),
+a named `detection` block of field/modifier/value selections
+(`CommandLine|contains`, `Image|endswith`, `ParentImage|contains`, `|re`
+regex, `|all` for AND-of-list, etc.), and a `condition` string combining
+those selections (`selection`, `1 of selection_*`, `all of selection_* and
+not 1 of filter_*`, and so on). `Sources/Argus/Sigma/` is a real, if partial,
+implementation of that spec: a hand-rolled YAML parser, a condition-language
+parser/evaluator, and a field matcher — not a re-skin of the old pattern
+list.
+
+**85 rules ship with the app**, sourced from three places:
+
+- **67 rules** imported verbatim from `SigmaHQ/sigma`'s `rules/macos/process_creation/` —
+  a real, actively-maintained community ruleset (account/SIP/security-tool
+  discovery, LaunchAgent and cron persistence, TCC and keychain access,
+  known macOS malware families like XCSSET, and much more).
+- **8 rules** imported verbatim from `SigmaHQ/sigma`'s Linux `process_creation`
+  set — genuinely portable shell/interpreter techniques (netcat/perl/php/
+  python/ruby reverse shells, base64 pipe-to-shell) that apply unchanged on
+  macOS, since it's the same shell tooling.
+- **10 rules** authored for Argus, filling gaps neither imported set covered
+  (TCC.db tampering, browser cookie/session theft, pipe-to-interpreter
+  fetch-and-execute, credential piping to `sudo -S`, AMFI/code-signing
+  tampering, and others).
+
+See `Resources/Rules/NOTICE.md` for full attribution and license details
+(SigmaHQ's rules are DRL 1.1; imported files are unmodified).
+
+**Managing rules**: the gear-adjacent "RULES LOADED" stat in the header
+opens a rule browser — search, filter by source, expand a rule to read its
+description and raw YAML, and toggle any rule off without deleting it
+(persisted, survives restarts). **Adding your own**: drop a `.yml` file
+(standard Sigma `process_creation`/`macos` format) into the folder the
+"Rules folder" button reveals in Finder, then hit "Reload" — no rebuild
+required. A rule you write there shows up tagged "Your rules" in the
+browser, exactly like the bundled ones.
 
 ## Managing false positives
 
@@ -112,7 +151,9 @@ Allowlist decisions persist to `~/Library/Application Support/Argus/allowlist.js
 Matched events persist to `~/Library/Application Support/Argus/events.jsonl`
 (newline-delimited JSON, capped at the most recent 5000 — trimmed
 periodically rather than on every write, so a live tail will occasionally
-see the file shrink back down).
+see the file shrink back down). Disabled-rule state persists to
+`~/Library/Application Support/Argus/rules-state.json`, and your own rule
+files live in `~/Library/Application Support/Argus/rules/`.
 
 ## Testing
 
@@ -120,16 +161,20 @@ see the file shrink back down).
 swift test
 ```
 
-Covers the full rule catalog (one positive sample per rule, plus a set of
-everyday commands that must never match), the allowlist filtering logic and
-persistence, event history persistence and trimming, the event feed's
-search/severity/session filter logic, the history heatmap's day-bucketing
-and technique-frequency aggregation, settings persistence and range
-clamping, and the notification-threshold decision logic (not actual
-notification delivery — that needs a running app bundle and OS permission,
-neither of which a plain `swift test` run has). Any new rule added to
-`RuleEngine.catalog` without a corresponding sample in `RuleEngineTests`
-fails the suite by design.
+45 tests. The Sigma engine is validated two ways: `SigmaEngineTests` checks
+the YAML parser, condition evaluator, and matcher against real rule text
+fetched from SigmaHQ (list-of-selections, `|contains|all`, nested
+conditions — not paraphrased), and `BundledRulesTests` loads all 85 shipped
+rule files from disk, asserts a few structural invariants (unique IDs,
+every condition parses, rule count is the exact expected number so silently
+losing a whole directory fails loudly), and — for the 10 Argus-authored
+rules, which embed `x-example-match`/`x-example-safe` fixtures — asserts
+each one matches what it claims to and doesn't match its benign lookalikes.
+That's the rule-count-scales replacement for the old "one hardcoded Swift
+sample per rule" pattern, which stopped being practical once the catalog
+grew past 20. Also covered: `RuleStoreTests` (enable/disable persistence,
+user-rule loading), the allowlist, event history persistence/trimming, the
+event feed's filter logic, history aggregation, and settings persistence.
 
 ## Project layout
 
@@ -138,8 +183,14 @@ Package.swift                  Swift Package Manager manifest (macOS 13+)
 Sources/Argus/
   App.swift                    App entry point — main window + MenuBarExtra
   Models.swift                 Severity, RawProcess, ProcessEvent, OrbitNode (Codable)
-  RuleEngine.swift              LOLBin pattern catalog
-  ProcessMonitor.swift          ps polling, diffing, risk-score decay
+  Sigma/
+    YAMLValue.swift               minimal YAML document tree
+    YAMLParser.swift              hand-rolled block-YAML parser
+    SigmaRule.swift                rule model + YAML→model mapping
+    SigmaCondition.swift           condition-language parser/evaluator
+    SigmaMatcher.swift             field/selection matching against a process record
+    RuleStore.swift                loads bundled + user rules, enable/disable persistence
+  ProcessMonitor.swift          ps polling, diffing, risk-score decay, Sigma matching
   AllowlistStore.swift          persisted (rule, executable) suppression
   EventStore.swift              persisted event history (events.jsonl)
   EventFilter.swift             search/severity/session filter logic
@@ -154,7 +205,9 @@ Sources/Argus/
   DashboardView.swift           main window, event feed, filters, all panels
   MenuBarPanel.swift            compact menu-bar popover
 Tests/ArgusTests/
-  RuleEngineTests.swift          catalog coverage + benign-command negatives
+  SigmaEngineTests.swift         parser/condition/matcher vs. real SigmaHQ rule text
+  BundledRulesTests.swift        all 85 shipped rules load + custom-rule fixtures
+  RuleStoreTests.swift           enable/disable persistence, user-rule loading
   AllowlistTests.swift           filter logic + persistence round-trip
   EventStoreTests.swift          history persistence + trimming
   EventFilterTests.swift         search/severity/session filter logic
@@ -163,7 +216,13 @@ Tests/ArgusTests/
 Resources/
   Info.plist                   app bundle metadata
   icon_gen.swift                generates the app icon programmatically
-scripts/build_app.sh            release build → signed .app bundle
+  Rules/
+    NOTICE.md                     attribution — what's imported vs. authored, and under what license
+    SIGMA_LICENSE.txt             SigmaHQ/sigma's license file
+    imported/                     67 rules verbatim from SigmaHQ macOS process_creation
+    imported-portable/            8 rules verbatim from SigmaHQ Linux process_creation (portable shell techniques)
+    custom/                       10 rules authored for Argus, filling gaps in the imported sets
+scripts/build_app.sh            release build → signed .app bundle (bundles Resources/Rules)
 ```
 
 ## Non-goals

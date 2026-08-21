@@ -5,6 +5,7 @@ struct DashboardView: View {
     @ObservedObject var allowlist: AllowlistStore
     let eventStore: EventStore
     @ObservedObject var settings: AppSettings
+    @ObservedObject var ruleStore: RuleStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var uptimeStart = Date()
     @State private var showingAllowlist = false
@@ -63,12 +64,12 @@ struct DashboardView: View {
                 Button {
                     showingRules = true
                 } label: {
-                    interactiveStatField(label: "RULES LOADED", value: "\(RuleEngine.catalog.count)")
+                    interactiveStatField(label: "RULES LOADED", value: "\(ruleStore.rules.count)")
                 }
                 .buttonStyle(.plain)
-                .help("Browse the detection rule catalog")
+                .help("Manage the detection rule catalog")
                 .popover(isPresented: $showingRules, arrowEdge: .bottom) {
-                    RulesPanel()
+                    RuleManagementPanel(ruleStore: ruleStore)
                 }
 
                 Button {
@@ -472,52 +473,194 @@ struct EventRow: View {
     }
 }
 
-/// Popover from the header's "RULES LOADED" stat — the full detection
-/// catalog, in plain view. A security tool that flags your commands
-/// shouldn't also hide what it's checking them against.
-struct RulesPanel: View {
+/// Popover from the header's "RULES LOADED" stat — the rule management
+/// surface. Every rule is a real Sigma detection (imported verbatim from
+/// SigmaHQ, or authored for Argus in the same format), individually
+/// toggleable, with its raw YAML source viewable inline. Drop a `.yml` file
+/// into the user rules folder and hit reload — no rebuild required.
+struct RuleManagementPanel: View {
+    @ObservedObject var ruleStore: RuleStore
+    @State private var searchText = ""
+    @State private var originFilter: RuleOrigin?
+
+    private var filteredRules: [SigmaRule] {
+        var rules = ruleStore.rules
+        if let originFilter {
+            rules = rules.filter { $0.origin == originFilter }
+        }
+        let trimmed = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !trimmed.isEmpty else { return rules }
+        return rules.filter {
+            $0.title.lowercased().contains(trimmed) ||
+            $0.techniqueLabel.lowercased().contains(trimmed) ||
+            $0.tags.joined(separator: " ").lowercased().contains(trimmed)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("DETECTION RULES")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1.5)
-                .foregroundStyle(Theme.muted)
-            Text("Every newly-spawned process's full command line is checked against all \(RuleEngine.catalog.count) of these.")
-                .font(.system(size: 10.5))
-                .foregroundStyle(Theme.dim)
+            HStack {
+                Text("DETECTION RULES")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.5)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Text("\(ruleStore.activeRules.count) of \(ruleStore.rules.count) active")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.dim)
+                TextField("Search title, technique, or tag…", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(Theme.mono(11))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Theme.surface)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.border, lineWidth: 1))
+            )
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    originChip(nil, label: "All")
+                    originChip(.sigmaHQMacOS, label: RuleOrigin.sigmaHQMacOS.label)
+                    originChip(.sigmaHQPortable, label: RuleOrigin.sigmaHQPortable.label)
+                    originChip(.custom, label: RuleOrigin.custom.label)
+                    originChip(.user, label: RuleOrigin.user.label)
+                }
+            }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(RuleEngine.catalog, id: \.name) { rule in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(alignment: .top) {
-                                Text(rule.name)
-                                    .font(Theme.mono(11.5, weight: .semibold))
-                                    .foregroundStyle(Theme.text)
-                                Spacer(minLength: 8)
-                                Text(rule.severity.label)
-                                    .font(.system(size: 8.5, weight: .bold))
-                                    .tracking(0.5)
-                                    .foregroundStyle(Theme.color(for: rule.severity))
-                            }
-                            Text(rule.technique)
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(Theme.accent)
-                            Text(rule.explanation)
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Theme.muted)
+                LazyVStack(spacing: 0) {
+                    ForEach(filteredRules) { rule in
+                        RuleManagementRow(rule: rule, isEnabled: ruleStore.isEnabled(rule)) {
+                            ruleStore.toggle(rule)
                         }
-                        .padding(.vertical, 9)
                         Divider().background(Theme.border)
                     }
                 }
             }
-            .frame(height: 360)
+            .frame(height: 340)
+
+            Divider().background(Theme.border)
+
+            HStack {
+                Button {
+                    ruleStore.revealUserRulesFolder()
+                } label: {
+                    Label("Rules folder", systemImage: "folder")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.accent)
+
+                Spacer()
+
+                Button {
+                    ruleStore.reload()
+                } label: {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.accent)
+            }
         }
         .padding(14)
-        .frame(width: 340)
+        .frame(width: 420)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
+    }
+
+    private func originChip(_ origin: RuleOrigin?, label: String) -> some View {
+        let isOn = originFilter == origin
+        return Button {
+            originFilter = origin
+        } label: {
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(isOn ? Theme.accent.opacity(0.18) : Theme.surface)
+                        .overlay(Capsule().strokeBorder(isOn ? Theme.accent.opacity(0.5) : Theme.border, lineWidth: 1))
+                )
+                .foregroundStyle(isOn ? Theme.accent : Theme.dim)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct RuleManagementRow: View {
+    let rule: SigmaRule
+    let isEnabled: Bool
+    let onToggle: () -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 8) {
+                Button(action: onToggle) {
+                    Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(isEnabled ? Theme.color(for: rule.severity) : Theme.dim)
+                }
+                .buttonStyle(.plain)
+                .help(isEnabled ? "Disable this rule" : "Enable this rule")
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(rule.title)
+                        .font(Theme.mono(11.5, weight: .semibold))
+                        .foregroundStyle(isEnabled ? Theme.text : Theme.dim)
+                    HStack(spacing: 6) {
+                        Text(rule.techniqueLabel)
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(Theme.accent)
+                        Text(rule.origin.label)
+                            .font(.system(size: 8.5))
+                            .foregroundStyle(Theme.dim)
+                    }
+                }
+
+                Spacer(minLength: 8)
+                Text(rule.severity.label)
+                    .font(.system(size: 8.5, weight: .bold))
+                    .tracking(0.5)
+                    .foregroundStyle(Theme.color(for: rule.severity))
+            }
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let description = rule.description {
+                        Text(description)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.muted)
+                    }
+                    ScrollView {
+                        Text(rule.rawYAML)
+                            .font(Theme.mono(9.5))
+                            .foregroundStyle(Theme.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 160)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Theme.surface))
+                }
+                .padding(.leading, 21)
+                .padding(.top, 2)
+            }
+        }
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
     }
 }
 

