@@ -55,6 +55,7 @@ struct MenuBarPanel: View {
             Divider().background(Theme.border)
 
             Button {
+                NSApp.keyWindow?.close()
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             } label: {
