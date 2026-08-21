@@ -4,6 +4,7 @@ import SwiftUI
 /// opening the full dashboard window.
 struct MenuBarPanel: View {
     @ObservedObject var monitor: ProcessMonitor
+    var dismissFlyout: () -> Void = {}
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -55,7 +56,7 @@ struct MenuBarPanel: View {
             Divider().background(Theme.border)
 
             Button {
-                NSApp.keyWindow?.close()
+                dismissFlyout()
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             } label: {

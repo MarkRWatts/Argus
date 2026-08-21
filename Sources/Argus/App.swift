@@ -33,6 +33,7 @@ struct ArgusApp: App {
     @StateObject private var settings = AppSettings()
     @StateObject private var ruleStore = RuleStore()
     private let eventStore = EventStore()
+    @State private var menuBarExtraIsInserted = true
 
     var body: some Scene {
         Window("Argus", id: "main") {
@@ -52,12 +53,24 @@ struct ArgusApp: App {
         .defaultSize(width: 1040, height: 720)
         .commandsRemoved()
 
-        MenuBarExtra {
-            MenuBarPanel(monitor: monitor)
+        MenuBarExtra(isInserted: $menuBarExtraIsInserted) {
+            MenuBarPanel(monitor: monitor, dismissFlyout: dismissMenuBarFlyout)
         } label: {
             Image(systemName: "eye.fill")
                 .foregroundStyle(Theme.color(for: monitor.riskLevel))
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// `.menuBarExtraStyle(.window)` has no public API to close its popover
+    /// programmatically — it only dismisses on an outside click or the app
+    /// resigning active. Toggling `isInserted` off and back on tears the
+    /// status item (and its open window) down and rebuilds it, which is the
+    /// documented workaround for forcing it closed from a button action.
+    private func dismissMenuBarFlyout() {
+        menuBarExtraIsInserted = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            menuBarExtraIsInserted = true
+        }
     }
 }
