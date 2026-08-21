@@ -10,6 +10,8 @@ locally; nothing is ever sent anywhere.
 See the [build plan](https://claude.ai/code/artifact/d7458060-daa3-4e99-8990-7d5734d821e7)
 for the full design rationale.
 
+![Argus dashboard — orbit view, risk gauge, activity sparkline, and the event feed](screenshot.png)
+
 ## Why this, specifically
 
 Modern macOS intrusions increasingly avoid dropping custom malware binaries —
