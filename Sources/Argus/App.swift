@@ -33,7 +33,6 @@ struct ArgusApp: App {
     @StateObject private var settings = AppSettings()
     @StateObject private var ruleStore = RuleStore()
     private let eventStore = EventStore()
-    @State private var menuBarExtraIsInserted = true
 
     var body: some Scene {
         Window("Argus", id: "main") {
@@ -53,7 +52,7 @@ struct ArgusApp: App {
         .defaultSize(width: 1040, height: 720)
         .commandsRemoved()
 
-        MenuBarExtra(isInserted: $menuBarExtraIsInserted) {
+        MenuBarExtra {
             MenuBarPanel(monitor: monitor, dismissFlyout: dismissMenuBarFlyout)
         } label: {
             Image(systemName: "eye.fill")
@@ -62,15 +61,15 @@ struct ArgusApp: App {
         .menuBarExtraStyle(.window)
     }
 
-    /// `.menuBarExtraStyle(.window)` has no public API to close its popover
-    /// programmatically — it only dismisses on an outside click or the app
-    /// resigning active. Toggling `isInserted` off and back on tears the
-    /// status item (and its open window) down and rebuilds it, which is the
-    /// documented workaround for forcing it closed from a button action.
+    /// `.menuBarExtraStyle(.window)`'s popover is a plain NSWindow under the
+    /// hood, but it apparently overrides `close()`'s should-close handling
+    /// (both `keyWindow?.close()` and toggling `isInserted` failed to
+    /// dismiss it in practice). `orderOut(nil)` skips that machinery
+    /// entirely — it just hides the window — so hide every visible window
+    /// that isn't the main dashboard.
     private func dismissMenuBarFlyout() {
-        menuBarExtraIsInserted = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            menuBarExtraIsInserted = true
+        for window in NSApp.windows where window.isVisible && window.title != "Argus" {
+            window.orderOut(nil)
         }
     }
 }
