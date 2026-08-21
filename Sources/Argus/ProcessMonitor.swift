@@ -181,6 +181,12 @@ final class ProcessMonitor: ObservableObject {
     private var tickIndex = 0
     private var samplingHealth = SamplingHealthTracker()
     private let chainCorrelator = ChainCorrelator()
+    /// Collapses a burst of individually-noteworthy notifications from one
+    /// busy process tree into a single, continuously-updated digest — see
+    /// `NotificationRollup`'s doc comment. Consulted only for events that
+    /// already passed the threshold/agent-quieting checks below; a quieted
+    /// event never reaches it.
+    private let notificationRollup = NotificationRollup()
 
     func configure(allowlist: AllowlistStore) {
         self.allowlist = allowlist
@@ -366,7 +372,29 @@ final class ProcessMonitor: ObservableObject {
                     if settings.quietAgentNotifications, assessment == .routine {
                         agentQuietedNotificationCount += 1
                     } else {
-                        NotificationManager.notify(event: event)
+                        // The rollup key is the furthest-known ancestor pid
+                        // — the process-tree root — not `proc.ppid` alone
+                        // and not provenance label. See `NotificationRollup`'s
+                        // doc comment for why two distinct agent sessions
+                        // must never share one digest just because they
+                        // carry the same supervisor label.
+                        let rootPID = ancestors.last?.pid ?? proc.ppid
+                        switch notificationRollup.record(rootPID: rootPID, techniques: eventRules.map(\.technique), severity: event.topSeverity, timestamp: event.timestamp) {
+                        case .deliver:
+                            NotificationManager.notify(event: event)
+                        case .digest(let count, let techniques, let since, let isFirstDigest):
+                            NotificationManager.notifyDigest(rootPID: rootPID, count: count, techniques: techniques, since: since)
+                            // Only the event that flips this root from
+                            // individual delivery into digesting gets a
+                            // diagnostics line — every later update to the
+                            // same window's digest replaces the notification
+                            // in place silently, or the log would be as
+                            // noisy as the notifications this feature exists
+                            // to quiet.
+                            if isFirstDigest {
+                                DiagnosticsLog.write("notification rollup — pid \(rootPID) tree exceeded its per-window budget, digesting further alerts")
+                            }
+                        }
                     }
                 }
                 riskScore = min(100, riskScore + event.topSeverity.weight)
