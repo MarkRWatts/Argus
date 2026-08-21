@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 /// Argus runs `LSUIElement` (menu-bar-only by default, no Dock icon) —
 /// closing the main window should hide it, not quit the app, since the menu
@@ -37,6 +38,10 @@ struct ArgusApp: App {
     /// alive — `PersistenceWatcher` isn't observed by any view, so nothing
     /// else in the view hierarchy retains it.
     private let persistenceWatcher: PersistenceWatcher
+    /// Held for the app's lifetime purely to keep it alive — see its own
+    /// doc comment. `UNUserNotificationCenter.delegate` is a weak reference,
+    /// so nothing else retains this object.
+    private let notificationResponder: NotificationResponder
 
     /// Identifies the main dashboard's `NSWindow`. Verified empirically
     /// (via a standalone probe app mirroring this app's Window + MenuBarExtra
@@ -67,6 +72,12 @@ struct ArgusApp: App {
         m.configure(settings: appSettings)
         m.configure(ruleStore: rules)
         m.start()
+
+        // Registering the delegate before requesting authorization ensures
+        // it's in place before any notification (including one delivered
+        // very shortly after launch) could arrive.
+        let responder = NotificationResponder(allowlist: allowlistStore, mainWindowID: Self.mainWindowID)
+        UNUserNotificationCenter.current().delegate = responder
         NotificationManager.requestAuthorizationIfNeeded()
 
         // Second, independent sensor: catches persistence artifacts left on
@@ -99,6 +110,7 @@ struct ArgusApp: App {
         _ruleStore = StateObject(wrappedValue: rules)
         eventStore = events
         persistenceWatcher = watcher
+        notificationResponder = responder
     }
 
     var body: some Scene {

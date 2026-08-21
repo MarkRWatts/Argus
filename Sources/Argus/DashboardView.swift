@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import UniformTypeIdentifiers
 
 struct DashboardView: View {
     @ObservedObject var monitor: ProcessMonitor
@@ -497,6 +498,12 @@ struct EventRow: View {
                     allowlist.requestAllow(ruleName: rule.name, executable: event.executable)
                 }
             }
+            Divider()
+            Button("Copy as JSON") {
+                guard let json = EventExport.json(for: event) else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(json, forType: .string)
+            }
         }
     }
 }
@@ -799,10 +806,14 @@ struct HistoryPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("ACTIVITY HISTORY")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1.5)
-                .foregroundStyle(Theme.muted)
+            HStack {
+                Text("ACTIVITY HISTORY")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.5)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                exportMenu
+            }
 
             if events.isEmpty {
                 Text("No history yet — matched events accumulate here as Argus runs, and survive a restart.")
@@ -836,6 +847,62 @@ struct HistoryPanel: View {
         .foregroundStyle(Theme.text)
         .onAppear {
             events = eventStore.loadAll()
+        }
+    }
+
+    /// Dropdown rather than a plain button since there are two formats to
+    /// choose between — kept visually lightweight (borderless, small type)
+    /// to match the plain-text "Rules folder"/"Reload" controls elsewhere in
+    /// these popovers rather than looking like a primary action.
+    private var exportMenu: some View {
+        Menu {
+            Button("Export as JSON…") { exportHistory(as: .json) }
+            Button("Export as CSV…") { exportHistory(as: .csv) }
+        } label: {
+            Label("Export…", systemImage: "square.and.arrow.up")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(events.isEmpty)
+    }
+
+    private enum ExportFormat: String { case json = "JSON", csv = "CSV" }
+
+    /// Snapshots `eventStore.loadAll()` up front (not inside the save
+    /// panel's completion handler) so the exported data reflects what the
+    /// user saw when they clicked "Export…", and so encoding happens on the
+    /// main actor where `EventStore` and this view already live — the save
+    /// panel's completion handler itself only ever touches plain `Data`/
+    /// `URL` values. Write failures are logged, never surfaced as a crash —
+    /// exporting evidence is a nice-to-have, not something that should take
+    /// the app down if e.g. the destination volume went away mid-write.
+    private func exportHistory(as format: ExportFormat) {
+        let all = eventStore.loadAll()
+        let panel = NSSavePanel()
+        let data: Data?
+        switch format {
+        case .json:
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "argus-events.json"
+            data = EventExport.json(events: all)
+        case .csv:
+            panel.allowedContentTypes = [.commaSeparatedText]
+            panel.nameFieldStringValue = "argus-events.csv"
+            data = EventExport.csv(events: all).data(using: .utf8)
+        }
+        guard let data else {
+            DiagnosticsLog.write("history export failed: could not encode events as \(format.rawValue)")
+            return
+        }
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                DiagnosticsLog.write("history export failed: \(error.localizedDescription)")
+            }
         }
     }
 
