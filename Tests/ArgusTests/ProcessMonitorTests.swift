@@ -122,6 +122,65 @@ final class ParentContextCacheTests: XCTestCase {
         cache.update(with: [raw(10, ppid: 1, image: "/bin/zsh")], tick: 1)
         XCTAssertEqual(cache.image(for: 10), "/bin/zsh")
     }
+
+    func testPpidIsResolvable() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [raw(10, ppid: 1, image: "/bin/bash")], tick: 0)
+        XCTAssertEqual(cache.ppid(for: 10), 1)
+        XCTAssertNil(cache.ppid(for: 999))
+    }
+
+    func testAncestryWalksThroughKnownAncestors() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [
+            raw(10, ppid: 1, image: "/sbin/launchd"),
+            raw(20, ppid: 10, image: "/bin/bash"),
+            raw(30, ppid: 20, image: "/usr/bin/curl"),
+        ], tick: 0)
+        XCTAssertEqual(cache.ancestry(of: 30), [20, 10])
+    }
+
+    func testAncestryExcludesPidOneAndBelow() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [raw(10, ppid: 1, image: "/bin/bash")], tick: 0)
+        XCTAssertEqual(cache.ancestry(of: 10), [], "pid 1 (launchd) carries no chain-correlation signal and must be excluded")
+    }
+
+    func testAncestryStopsAtUnknownParent() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        // pid 40's own ppid (99) is known, but 99 has no entry of its own —
+        // the walk must include the known link and stop there rather than
+        // fabricate anything further up.
+        cache.update(with: [raw(40, ppid: 99, image: "/bin/bash")], tick: 0)
+        XCTAssertEqual(cache.ancestry(of: 40), [99])
+    }
+
+    func testAncestryOfUnknownPidIsEmpty() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [raw(10, ppid: 1, image: "/bin/bash")], tick: 0)
+        XCTAssertEqual(cache.ancestry(of: 999), [])
+    }
+
+    func testAncestryIsCycleSafe() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        // Corrupted/adversarial data: 50 and 60 point at each other. Must
+        // terminate rather than loop forever.
+        cache.update(with: [
+            raw(50, ppid: 60, image: "/bin/a"),
+            raw(60, ppid: 50, image: "/bin/b"),
+        ], tick: 0)
+        XCTAssertEqual(cache.ancestry(of: 50), [60])
+    }
+
+    func testAncestryRespectsMaxDepth() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        var sample: [RawProcess] = []
+        for pid in Int32(2)...30 {
+            sample.append(raw(pid, ppid: pid - 1, image: "/bin/p\(pid)"))
+        }
+        cache.update(with: sample, tick: 0)
+        XCTAssertEqual(cache.ancestry(of: 30, maxDepth: 5), [29, 28, 27, 26, 25])
+    }
 }
 
 final class SamplingHealthTrackerTests: XCTestCase {

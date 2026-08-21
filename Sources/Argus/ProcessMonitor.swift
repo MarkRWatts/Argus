@@ -20,6 +20,7 @@ struct ParentContextCache {
         var image: String
         var command: String
         var user: String
+        var ppid: Int32
         var lastSeenTick: Int
     }
 
@@ -34,7 +35,7 @@ struct ParentContextCache {
     /// refreshed within the retention window.
     mutating func update(with sample: [RawProcess], tick: Int) {
         for p in sample {
-            entries[p.id] = Entry(image: p.image, command: p.command, user: p.user, lastSeenTick: tick)
+            entries[p.id] = Entry(image: p.image, command: p.command, user: p.user, ppid: p.ppid, lastSeenTick: tick)
         }
         entries = entries.filter { tick - $0.value.lastSeenTick <= retentionTicks }
     }
@@ -42,6 +43,27 @@ struct ParentContextCache {
     func image(for pid: Int32) -> String? { entries[pid]?.image }
     func command(for pid: Int32) -> String? { entries[pid]?.command }
     func user(for pid: Int32) -> String? { entries[pid]?.user }
+    func ppid(for pid: Int32) -> Int32? { entries[pid]?.ppid }
+
+    /// Walks ppid links from `pid` up through the cache to build its ancestor
+    /// chain, nearest ancestor first, excluding `pid` itself. Stops at
+    /// `pid <= 1` (launchd/kernel — the root of every process tree, so it
+    /// carries no chain-correlation signal), at a pid the cache has no entry
+    /// for (parent already aged out or was never sampled), at a cycle (should
+    /// never happen on a real process table, but a corrupted/adversarial
+    /// sample must not spin forever), or at `maxDepth` hops.
+    func ancestry(of pid: Int32, maxDepth: Int = 20) -> [Int32] {
+        var chain: [Int32] = []
+        var seen: Set<Int32> = [pid]
+        var current = pid
+        while chain.count < maxDepth {
+            guard let parent = ppid(for: current), parent > 1, !seen.contains(parent) else { break }
+            chain.append(parent)
+            seen.insert(parent)
+            current = parent
+        }
+        return chain
+    }
 }
 
 /// Why a `ps` sample didn't yield a usable process list.
@@ -133,6 +155,7 @@ final class ProcessMonitor: ObservableObject {
     private var parentCache = ParentContextCache()
     private var tickIndex = 0
     private var samplingHealth = SamplingHealthTracker()
+    private let chainCorrelator = ChainCorrelator()
 
     func configure(allowlist: AllowlistStore) {
         self.allowlist = allowlist
@@ -269,6 +292,15 @@ final class ProcessMonitor: ObservableObject {
                                              bornAt: Date(), angle: angle))
                 let techniques = matches.map(\.technique).joined(separator: "; ")
                 DiagnosticsLog.write("[\(event.topSeverity.label)] pid=\(proc.id) \(proc.executable) — \(techniques) — risk=\(Int(riskScore))")
+
+                let ancestry = parentCache.ancestry(of: proc.id)
+                if let detection = chainCorrelator.register(
+                    eventID: event.id, pid: proc.id, executable: proc.executable,
+                    ruleNames: Set(matches.map(\.name)), techniques: Set(matches.map(\.technique)),
+                    severity: event.topSeverity, timestamp: event.timestamp, ancestry: ancestry
+                ) {
+                    ingestExternal(Self.chainEvent(from: detection, pid: proc.id, ppid: proc.ppid))
+                }
             }
         }
         if orbitNodes.count > 400 { orbitNodes.removeFirst(orbitNodes.count - 400) }
@@ -302,6 +334,39 @@ final class ProcessMonitor: ObservableObject {
         riskScore = min(100, riskScore + event.topSeverity.weight)
         let techniques = event.rules.map(\.technique).joined(separator: "; ")
         DiagnosticsLog.write("[\(event.topSeverity.label)] external pid=\(event.pid) \(event.executable) — \(techniques) — risk=\(Int(riskScore))")
+    }
+
+    /// Short, human-scannable timestamps for the chain explanation text below
+    /// — the full date is already on the enclosing `ProcessEvent`.
+    nonisolated private static let chainTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    /// Builds the synthetic `ProcessEvent` representing a `ChainDetection` so
+    /// it can flow through `ingestExternal` like any other externally-sourced
+    /// event (feed insert, persist, threshold-gated notification, risk).
+    /// Attributed to the triggering process's own pid/ppid rather than pid 0
+    /// — unlike a `PersistenceWatcher` artifact this isn't sourced from a
+    /// pid-less filesystem change, it's a statement about a real process
+    /// tree, so it keeps that tree's identity.
+    nonisolated private static func chainEvent(from detection: ChainDetection, pid: Int32, ppid: Int32) -> ProcessEvent {
+        let command = detection.members.map(\.executable).joined(separator: " → ")
+        let technique = detection.techniques.sorted().joined(separator: ", ")
+        let explanation = detection.members.map { member -> String in
+            let names = member.ruleNames.sorted().joined(separator: ", ")
+            let time = chainTimestampFormatter.string(from: member.timestamp)
+            return "\(member.executable) (pid \(member.pid), \(time)): \(names)"
+        }.joined(separator: "; ")
+
+        let rule = MatchedRule(
+            name: "Suspicious sequence: \(detection.techniques.count) techniques in one process tree",
+            severity: detection.escalatedSeverity,
+            technique: technique,
+            explanation: explanation
+        )
+        return ProcessEvent(pid: pid, ppid: ppid, executable: "chain", command: command, rules: [rule], timestamp: Date())
     }
 
     private func trimActivityLog() {
