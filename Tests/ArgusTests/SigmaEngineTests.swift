@@ -298,16 +298,29 @@ final class SigmaEngineTests: XCTestCase {
 
         // Embed the value at every possible byte alignment (mod 3) within a
         // larger encoded stream and confirm one of the three precomputed
-        // offset encodings is found regardless of where it lands.
+        // offset encodings is found regardless of where it lands. The suffix
+        // matters: it forces the bytes after the value to differ from plain
+        // padding, which is exactly the case the trailing-character trim
+        // exists for — without it, an over-long encoding still matches.
         for prefixLength in 0...5 {
             let prefix = String(repeating: "X", count: prefixLength)
-            let fullyEncoded = Data((prefix + value).utf8).base64EncodedString()
+            let fullyEncoded = Data((prefix + value + "; rm -rf /tmp/x").utf8).base64EncodedString()
             let record = ["CommandLine": fullyEncoded]
             XCTAssertTrue(SigmaMatcher.matches(rule, record: record), "prefix length \(prefixLength) (offset \(prefixLength % 3)) should still match")
         }
 
         let noPayload = ["CommandLine": Data("totally-unrelated-string".utf8).base64EncodedString()]
         XCTAssertFalse(SigmaMatcher.matches(rule, record: noPayload))
+    }
+
+    func testBase64OffsetEncodingsMatchReferenceVectors() {
+        // Computed with the reference implementation
+        // (base64.b64encode(b' '*i + val)[start[i]:end[(len(val)+i)%3]]).
+        XCTAssertEqual(SigmaRule.base64OffsetEncodings(of: "/bin/bash"),
+                       ["L2Jpbi9iYXNo", "9iaW4vYmFza", "vYmluL2Jhc2"])
+        XCTAssertEqual(SigmaRule.base64OffsetEncodings(of: "bash -i"),
+                       ["YmFzaCAta", "Jhc2ggLW", "iYXNoIC1p"])
+        XCTAssertEqual(SigmaRule.base64OffsetEncodings(of: "A"), ["Q", "", "B"])
     }
 
     // MARK: - `cased` modifier

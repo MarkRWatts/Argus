@@ -226,10 +226,15 @@ struct SigmaRule: Identifiable {
             let encoded = padded.base64EncodedString()
             let start = min(startOffsets[i], encoded.count)
             let remainder = (bytes.count + i) % 3
+            // A final group of 1 dangling byte encodes as "XY==" where Y
+            // carries only 2 real bits — drop 3 chars; 2 dangling bytes
+            // encode as "XYZ=" where Z carries only 4 real bits — drop 2.
+            // (Matches the reference implementation's end_offsets of
+            // (None, -3, -2) indexed by (len + i) % 3.)
             let endTrim: Int
             switch remainder {
-            case 2: endTrim = 3
-            case 1: endTrim = 2
+            case 1: endTrim = 3
+            case 2: endTrim = 2
             default: endTrim = 0
             }
             let startIndex = encoded.index(encoded.startIndex, offsetBy: start)
