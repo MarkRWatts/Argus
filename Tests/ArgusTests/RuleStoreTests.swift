@@ -186,9 +186,11 @@ final class RuleStoreTests: XCTestCase {
         try? sampleRule.write(to: bundled.appendingPathComponent("custom/test.yml"), atomically: true, encoding: .utf8)
 
         let store = RuleStore(bundledRulesDirectory: bundled, userRulesDirectory: user, stateFileURL: state, integrityGuard: fixedKeyGuard)
-        // No rules-state.json exists yet — nothing has been authenticated,
-        // nothing to verify.
-        XCTAssertEqual(store.integrityVerdict, .unverifiable)
+        // Verification is async-on-request now (a Keychain prompt must never
+        // block init), so init leaves the verdict unset. No rules-state.json
+        // exists yet — nothing has been authenticated, nothing to verify.
+        XCTAssertNil(store.integrityVerdict)
+        XCTAssertEqual(fixedKeyGuard.verify(state), .unverifiable)
         XCTAssertEqual(store.rules.count, 1)
 
         store.toggle(store.rules[0])

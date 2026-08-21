@@ -115,9 +115,23 @@ struct KeychainIntegrityKeyProvider: IntegrityKeyProvider {
 /// path, not filename — a store pointed at a same-named file elsewhere (a
 /// test's temp copy, a second profile) must never collide with the real
 /// file's recorded MAC.
-final class IntegrityGuard {
+/// Threading: fetching the Keychain key can present a user consent prompt
+/// (the item's ACL doesn't cover this binary — e.g. after a rebuild changes
+/// the ad-hoc signature), and SecItem calls block their thread until the
+/// user answers. Every operation therefore funnels through a private serial
+/// queue: callers never block on a pending prompt (`recordAuthenticatedWrite`
+/// and `verifyAsync` are fire-and-forget/async; the synchronous `verify` is
+/// for tests), and the key attempt is cached so at most one prompt appears
+/// per launch, however many files are guarded. `@unchecked Sendable` is
+/// sound because all mutable state is confined to that queue.
+final class IntegrityGuard: @unchecked Sendable {
     private let keyProvider: IntegrityKeyProvider
     private let sidecarURL: URL
+    private let queue = DispatchQueue(label: "argus.integrity-guard", qos: .utility)
+    /// `nil` = not yet attempted; `.some(nil)` = attempted and unavailable
+    /// (denied, locked, no keychain) — cached so a denial doesn't re-prompt
+    /// on every subsequent call this launch. Only touched on `queue`.
+    private var cachedKeyAttempt: Data??
 
     /// Shared production instance backed by the real Keychain. Individual
     /// stores default their `integrityGuard` init parameter to this so
@@ -142,9 +156,38 @@ final class IntegrityGuard {
     /// Call this after every legitimate, already-authenticated write to a
     /// guarded file — it recomputes the file's MAC from what's on disk right
     /// now and persists it, so the next `verify(_:)` treats this content as
-    /// trusted.
+    /// trusted. Fire-and-forget: the work (including a possible Keychain
+    /// prompt) happens on the guard's own queue, never on the caller's
+    /// thread. Ordering with `verify`/`verifyAsync` is preserved because
+    /// everything shares the one serial queue.
     func recordAuthenticatedWrite(of fileURL: URL) {
-        guard let key = keyProvider.key() else {
+        queue.async { self.recordOnQueue(fileURL) }
+    }
+
+    /// Synchronous verification — blocks the calling thread until any
+    /// already-queued work (pending MAC records) and the verification itself
+    /// complete. Intended for tests; app code should use `verifyAsync` so a
+    /// Keychain consent prompt can never freeze the UI.
+    func verify(_ fileURL: URL) -> IntegrityVerdict {
+        queue.sync { verifyOnQueue(fileURL) }
+    }
+
+    /// Asynchronous verification; `completion` runs on the guard's queue —
+    /// hop to the main actor before touching UI or store state.
+    func verifyAsync(_ fileURL: URL, completion: @escaping (IntegrityVerdict) -> Void) {
+        queue.async { completion(self.verifyOnQueue(fileURL)) }
+    }
+
+    /// The cached one-shot key fetch (see the threading note on the type).
+    private func keyOnQueue() -> Data? {
+        if let attempted = cachedKeyAttempt { return attempted }
+        let key = keyProvider.key()
+        cachedKeyAttempt = .some(key)
+        return key
+    }
+
+    private func recordOnQueue(_ fileURL: URL) {
+        guard let key = keyOnQueue() else {
             DiagnosticsLog.write("integrity-guard: no key available, cannot record \(fileURL.lastPathComponent)")
             return
         }
@@ -167,8 +210,8 @@ final class IntegrityGuard {
     /// once the app has surfaced the tamper as a critical event, there's
     /// nothing more for a repeat report to add, and re-baselining is what
     /// lets a *new* out-of-band edit be distinguished from the same old one.
-    func verify(_ fileURL: URL) -> IntegrityVerdict {
-        guard let key = keyProvider.key() else {
+    private func verifyOnQueue(_ fileURL: URL) -> IntegrityVerdict {
+        guard let key = keyOnQueue() else {
             DiagnosticsLog.write("integrity-guard: no key available, cannot verify \(fileURL.lastPathComponent)")
             return .unverifiable
         }

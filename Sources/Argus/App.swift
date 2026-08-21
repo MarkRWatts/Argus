@@ -89,19 +89,28 @@ struct ArgusApp: App {
         }
         watcher.start()
 
-        // IntegrityGuard verified rules-state.json/allowlist.json against
-        // their last authenticated-write MAC during each store's own init
-        // (above). A `.tampered` verdict means the file changed outside
-        // Argus's Touch ID/password-gated write path — exactly what a local
-        // attacker would do to blind a rule or re-enable a suppressed alert
-        // silently — so surface it as a critical event in the feed.
+        // Verify rules-state.json/allowlist.json against their last
+        // authenticated-write MAC — asynchronously, off this init: the
+        // Keychain key fetch can present a consent prompt (seen in practice
+        // after a rebuild changed the ad-hoc signature), and doing it here
+        // synchronously froze the whole launch behind that dialog. A
+        // `.tampered` verdict means the file changed outside Argus's Touch
+        // ID/password-gated write path — exactly what a local attacker would
+        // do to blind a rule or re-enable a suppressed alert silently — so
+        // surface it as a critical event in the feed.
         // `.baselineEstablished`/`.unverifiable` are informational only and
         // already logged by IntegrityGuard itself.
-        for (verdict, fileURL) in [(rules.integrityVerdict, rules.stateFileURL), (allowlistStore.integrityVerdict, allowlistStore.fileURL)] {
-            if verdict == .tampered {
-                DiagnosticsLog.write("integrity-guard: tamper detected outside Argus for \(fileURL.lastPathComponent)")
-                m.ingestExternal(IntegrityGuard.tamperEvent(for: fileURL))
-            }
+        let rulesStateURL = rules.stateFileURL
+        rules.verifyIntegrity { [weak m] verdict in
+            guard verdict == .tampered else { return }
+            DiagnosticsLog.write("integrity-guard: tamper detected outside Argus for \(rulesStateURL.lastPathComponent)")
+            m?.ingestExternal(IntegrityGuard.tamperEvent(for: rulesStateURL))
+        }
+        let allowlistURL = allowlistStore.fileURL
+        allowlistStore.verifyIntegrity { [weak m] verdict in
+            guard verdict == .tampered else { return }
+            DiagnosticsLog.write("integrity-guard: tamper detected outside Argus for \(allowlistURL.lastPathComponent)")
+            m?.ingestExternal(IntegrityGuard.tamperEvent(for: allowlistURL))
         }
 
         _monitor = StateObject(wrappedValue: m)

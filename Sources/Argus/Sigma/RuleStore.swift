@@ -16,9 +16,11 @@ final class RuleStore: ObservableObject {
     /// Windows-only rule dropped into the user rules folder by mistake.
     @Published private(set) var skippedIncompatibleCount: Int = 0
     /// Result of verifying `rules-state.json` against the last MAC recorded
-    /// by an authenticated write, computed once at init. See `IntegrityGuard`
-    /// — the app checks this after construction to decide whether to report
-    /// a tamper event; the store itself doesn't emit events.
+    /// by an authenticated write. `nil` until `verifyIntegrity` completes —
+    /// verification is deliberately not done in init, because the Keychain
+    /// key fetch can present a consent prompt that would otherwise block app
+    /// launch (see `IntegrityGuard`'s threading note). The store itself
+    /// doesn't emit events; the app acts on the verdict.
     private(set) var integrityVerdict: IntegrityVerdict?
 
     private let bundledRulesDirectory: URL?
@@ -42,9 +44,21 @@ final class RuleStore: ObservableObject {
         // Keep the shared Argus support directory owner-only (see EventStore).
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupport.path)
 
-        integrityVerdict = integrityGuard?.verify(self.stateFileURL)
         loadDisabledState()
         reload()
+    }
+
+    /// Verifies `rules-state.json` off the main thread and stores the
+    /// verdict (also handed to `completion`, on the main actor). A no-op
+    /// when no guard was injected.
+    func verifyIntegrity(completion: @escaping @MainActor (IntegrityVerdict) -> Void = { _ in }) {
+        guard let integrityGuard else { return }
+        integrityGuard.verifyAsync(stateFileURL) { [weak self] verdict in
+            Task { @MainActor in
+                self?.integrityVerdict = verdict
+                completion(verdict)
+            }
+        }
     }
 
     func reload() {

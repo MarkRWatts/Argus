@@ -80,7 +80,16 @@ final class AllowlistStoreTests: XCTestCase {
         )
 
         let store = AllowlistStore(fileURL: url, integrityGuard: fixedKeyGuard)
-        // No allowlist.json exists yet — nothing has been authenticated, nothing to verify.
+        // Verification is async-on-request now (a Keychain prompt must never
+        // block init), so init leaves the verdict unset. No allowlist.json
+        // exists yet — nothing has been authenticated, nothing to verify.
+        XCTAssertNil(store.integrityVerdict)
+        let verified = expectation(description: "verifyIntegrity completes")
+        store.verifyIntegrity { verdict in
+            XCTAssertEqual(verdict, .unverifiable)
+            verified.fulfill()
+        }
+        wait(for: [verified], timeout: 5)
         XCTAssertEqual(store.integrityVerdict, .unverifiable)
 
         store.allow(ruleName: "A", executable: "osascript")

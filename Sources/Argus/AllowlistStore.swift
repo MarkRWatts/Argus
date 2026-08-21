@@ -23,9 +23,11 @@ struct AllowlistEntry: Identifiable, Codable, Equatable {
 final class AllowlistStore: ObservableObject {
     @Published private(set) var entries: [AllowlistEntry] = []
     /// Result of verifying `allowlist.json` against the last MAC recorded by
-    /// an authenticated write, computed once at init. See `IntegrityGuard` —
-    /// the app checks this after construction to decide whether to report a
-    /// tamper event; the store itself doesn't emit events.
+    /// an authenticated write. `nil` until `verifyIntegrity` completes —
+    /// verification is deliberately not done in init, because the Keychain
+    /// key fetch can present a consent prompt that would otherwise block app
+    /// launch (see `IntegrityGuard`'s threading note). The store itself
+    /// doesn't emit events; the app acts on the verdict.
     private(set) var integrityVerdict: IntegrityVerdict?
 
     let fileURL: URL
@@ -46,8 +48,20 @@ final class AllowlistStore: ObservableObject {
             self.fileURL = dir.appendingPathComponent("allowlist.json")
         }
         self.integrityGuard = integrityGuard
-        integrityVerdict = integrityGuard?.verify(self.fileURL)
         load()
+    }
+
+    /// Verifies `allowlist.json` off the main thread and stores the verdict
+    /// (also handed to `completion`, on the main actor). A no-op when no
+    /// guard was injected.
+    func verifyIntegrity(completion: @escaping @MainActor (IntegrityVerdict) -> Void = { _ in }) {
+        guard let integrityGuard else { return }
+        integrityGuard.verifyAsync(fileURL) { [weak self] verdict in
+            Task { @MainActor in
+                self?.integrityVerdict = verdict
+                completion(verdict)
+            }
+        }
     }
 
     func isAllowed(ruleName: String, executable: String) -> Bool {
