@@ -8,6 +8,9 @@ import Foundation
 /// field = OR unless `|all` is present (then AND), and a selection given as
 /// a YAML list of field-groups = OR across the list (AND within each group)
 /// — the shape SigmaHQ uses for "either this combination, or that one".
+/// `base64` / `base64offset` encode the rule value before comparing, and
+/// `cased` (like base64) compares case-sensitively instead of the default
+/// lowercased comparison.
 enum SigmaMatcher {
     static func matches(_ rule: SigmaRule, record: [String: String]) -> Bool {
         guard let node = rule.parsedCondition else { return false }
@@ -26,8 +29,14 @@ enum SigmaMatcher {
     private static func evaluateItem(_ item: SigmaSelectionItem, record: [String: String]) -> Bool {
         switch item {
         case .keywords(let words):
-            let haystack = (record["CommandLine"] ?? "").lowercased()
-            return words.contains { haystack.contains($0.lowercased()) }
+            // Keyword selections have no field name, so per spec they're
+            // matched against every field present on the record, not just
+            // CommandLine.
+            let haystacks = record.values.map { $0.lowercased() }
+            return words.contains { word in
+                let needle = word.lowercased()
+                return haystacks.contains { $0.contains(needle) }
+            }
         case .fields(let matches):
             // A non-empty AND of field matches. Empty means every field in the
             // group was dropped as malformed at parse time; treat that as a
@@ -49,8 +58,26 @@ enum SigmaMatcher {
                 let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
                 return re.firstMatch(in: haystack, options: [], range: range) != nil
             }
-            let h = haystack.lowercased()
-            let v = value.lowercased()
+            if mods.contains("base64offset") {
+                // Always a contains-style search across the three
+                // precomputed offset encodings — an exact/prefix/suffix
+                // match against a value that's deliberately been truncated
+                // to a substring wouldn't be meaningful.
+                guard index < match.base64OffsetValues.count else { return false }
+                return match.base64OffsetValues[index].contains { !$0.isEmpty && haystack.contains($0) }
+            }
+            // base64 is case-significant by construction, and `cased`
+            // requests case-sensitive comparison explicitly; both skip the
+            // usual lowercasing of haystack and value.
+            let isBase64 = mods.contains("base64")
+            let cased = isBase64 || mods.contains("cased")
+            let h = cased ? haystack : haystack.lowercased()
+            let v: String
+            if isBase64 {
+                v = index < match.base64Values.count ? match.base64Values[index] : ""
+            } else {
+                v = cased ? value : value.lowercased()
+            }
             if mods.contains("startswith") { return h.hasPrefix(v) }
             if mods.contains("endswith") { return h.hasSuffix(v) }
             if mods.contains("contains") { return h.contains(v) }

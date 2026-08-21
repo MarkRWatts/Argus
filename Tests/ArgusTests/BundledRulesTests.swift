@@ -23,9 +23,9 @@ final class BundledRulesTests: XCTestCase {
 
     private static let allRules: [SigmaRule] = {
         var rules: [SigmaRule] = []
-        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported"), origin: .sigmaHQMacOS)
-        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported-portable"), origin: .sigmaHQPortable)
-        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("custom"), origin: .custom)
+        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported"), origin: .sigmaHQMacOS).rules
+        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("imported-portable"), origin: .sigmaHQPortable).rules
+        rules += RuleStore.loadRules(from: rulesRoot.appendingPathComponent("custom"), origin: .custom).rules
         return rules
     }()
 
