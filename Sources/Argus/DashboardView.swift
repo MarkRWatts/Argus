@@ -931,6 +931,12 @@ struct HistoryPanel: View {
     /// `URL` values. Write failures are logged, never surfaced as a crash —
     /// exporting evidence is a nice-to-have, not something that should take
     /// the app down if e.g. the destination volume went away mid-write.
+    ///
+    /// Explicitly `@MainActor`: `EventStore` and `NSSavePanel` both require
+    /// it, and while newer compilers infer it here from the enclosing View,
+    /// the CI toolchain's does not — the annotation keeps the isolation
+    /// identical on both.
+    @MainActor
     private func exportHistory(as format: ExportFormat) {
         let all = eventStore.loadAll()
         let panel = NSSavePanel()
