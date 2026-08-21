@@ -72,8 +72,13 @@ struct ProcessEvent: Identifiable, Codable {
     let command: String
     let rules: [MatchedRule]
     let timestamp: Date
+    /// Supervisor labels from `ProvenanceClassifier` (e.g. "claude",
+    /// "docker") — attribution for triage, never a trust signal; see
+    /// `ProvenanceTag`'s doc comment. Empty for synthetic events (chain,
+    /// persistence, tamper) that don't carry a real process ancestry.
+    let provenance: [String]
 
-    init(id: UUID = UUID(), pid: Int32, ppid: Int32, executable: String, command: String, rules: [MatchedRule], timestamp: Date) {
+    init(id: UUID = UUID(), pid: Int32, ppid: Int32, executable: String, command: String, rules: [MatchedRule], timestamp: Date, provenance: [String] = []) {
         self.id = id
         self.pid = pid
         self.ppid = ppid
@@ -81,6 +86,28 @@ struct ProcessEvent: Identifiable, Codable {
         self.command = command
         self.rules = rules
         self.timestamp = timestamp
+        self.provenance = provenance
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, pid, ppid, executable, command, rules, timestamp, provenance
+    }
+
+    // Custom decode so historical events.jsonl lines written before
+    // `provenance` existed still decode: `decodeIfPresent` falls back to `[]`
+    // instead of failing the whole load on a missing key. `encode(to:)` is
+    // left to the synthesized Encodable conformance — every newly-written
+    // event always carries the key.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        pid = try container.decode(Int32.self, forKey: .pid)
+        ppid = try container.decode(Int32.self, forKey: .ppid)
+        executable = try container.decode(String.self, forKey: .executable)
+        command = try container.decode(String.self, forKey: .command)
+        rules = try container.decode([MatchedRule].self, forKey: .rules)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        provenance = try container.decodeIfPresent([String].self, forKey: .provenance) ?? []
     }
 
     var topSeverity: Severity { rules.map(\.severity).max() ?? .info }

@@ -181,6 +181,62 @@ final class ParentContextCacheTests: XCTestCase {
         cache.update(with: sample, tick: 0)
         XCTAssertEqual(cache.ancestry(of: 30, maxDepth: 5), [29, 28, 27, 26, 25])
     }
+
+    // MARK: - ancestorRecords
+
+    func testAncestorRecordsWalksThroughKnownAncestorsWithImageAndCommand() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [
+            raw(10, ppid: 1, image: "/sbin/launchd"),
+            raw(20, ppid: 10, image: "/bin/bash"),
+            raw(30, ppid: 20, image: "/usr/bin/curl"),
+        ], tick: 0)
+        let records = cache.ancestorRecords(of: 30)
+        XCTAssertEqual(records.map(\.pid), [20, 10])
+        XCTAssertEqual(records.map(\.image), ["/bin/bash", "/sbin/launchd"])
+        XCTAssertEqual(records.map(\.command), ["/bin/bash", "/sbin/launchd"])
+    }
+
+    func testAncestorRecordsAndAncestryShareIdenticalPidOrdering() {
+        // ancestry(of:) is now a pid-only projection of ancestorRecords —
+        // they must always agree on which pids are walked and in what order.
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [
+            raw(40, ppid: 99, image: "/bin/bash"), // 99 has no entry of its own
+        ], tick: 0)
+        XCTAssertEqual(cache.ancestorRecords(of: 40).map(\.pid), cache.ancestry(of: 40))
+        XCTAssertEqual(cache.ancestry(of: 40), [99])
+    }
+
+    func testAncestorRecordsReportsEmptyImageAndCommandForUncachedPid() {
+        // pid 99 is known only as pid 40's ppid link — it was never itself
+        // sampled/cached, so its record carries the pid but empty
+        // image/command rather than being dropped from the chain.
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [raw(40, ppid: 99, image: "/bin/bash")], tick: 0)
+        let records = cache.ancestorRecords(of: 40)
+        XCTAssertEqual(records.map(\.pid), [99])
+        XCTAssertEqual(records.first?.image, "")
+        XCTAssertEqual(records.first?.command, "")
+    }
+
+    func testAncestorRecordsOfUnknownPidIsEmpty() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        cache.update(with: [raw(10, ppid: 1, image: "/bin/bash")], tick: 0)
+        XCTAssertEqual(cache.ancestorRecords(of: 999).count, 0)
+    }
+
+    func testAncestorRecordsRespectsMaxDepth() {
+        var cache = ParentContextCache(retentionTicks: 3)
+        var sample: [RawProcess] = []
+        for pid in Int32(2)...30 {
+            sample.append(raw(pid, ppid: pid - 1, image: "/bin/p\(pid)"))
+        }
+        cache.update(with: sample, tick: 0)
+        let records = cache.ancestorRecords(of: 30, maxDepth: 5)
+        XCTAssertEqual(records.map(\.pid), [29, 28, 27, 26, 25])
+        XCTAssertEqual(records.map(\.image), ["/bin/p29", "/bin/p28", "/bin/p27", "/bin/p26", "/bin/p25"])
+    }
 }
 
 final class SamplingHealthTrackerTests: XCTestCase {

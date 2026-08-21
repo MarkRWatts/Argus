@@ -46,23 +46,40 @@ struct ParentContextCache {
     func ppid(for pid: Int32) -> Int32? { entries[pid]?.ppid }
 
     /// Walks ppid links from `pid` up through the cache to build its ancestor
-    /// chain, nearest ancestor first, excluding `pid` itself. Stops at
-    /// `pid <= 1` (launchd/kernel — the root of every process tree, so it
-    /// carries no chain-correlation signal), at a pid the cache has no entry
-    /// for (parent already aged out or was never sampled), at a cycle (should
-    /// never happen on a real process table, but a corrupted/adversarial
-    /// sample must not spin forever), or at `maxDepth` hops.
-    func ancestry(of pid: Int32, maxDepth: Int = 20) -> [Int32] {
-        var chain: [Int32] = []
+    /// records (pid plus that pid's cached image/command), nearest ancestor
+    /// first, excluding `pid` itself. Stops at `pid <= 1` (launchd/kernel —
+    /// the root of every process tree, so it carries no chain-correlation or
+    /// provenance signal), at a pid the cache has no *ppid link* for (parent
+    /// already aged out or was never sampled), at a cycle (should never
+    /// happen on a real process table, but a corrupted/adversarial sample
+    /// must not spin forever), or at `maxDepth` hops.
+    ///
+    /// A pid can appear in the chain (discovered as another pid's ppid) even
+    /// when the cache never itself sampled that pid — e.g. a parent that
+    /// exited and aged out past `retentionTicks` before this walk ran. Such a
+    /// pid still terminates the walk one hop later (its own ppid link is
+    /// unknown) but is reported here with empty `image`/`command` rather than
+    /// silently dropped, so callers keying off ancestor pids (chain
+    /// correlation) and callers keying off ancestor identity (provenance
+    /// attribution) both see the exact same chain length.
+    func ancestorRecords(of pid: Int32, maxDepth: Int = 20) -> [(pid: Int32, image: String, command: String)] {
+        var chain: [(pid: Int32, image: String, command: String)] = []
         var seen: Set<Int32> = [pid]
         var current = pid
         while chain.count < maxDepth {
             guard let parent = ppid(for: current), parent > 1, !seen.contains(parent) else { break }
-            chain.append(parent)
+            let entry = entries[parent]
+            chain.append((pid: parent, image: entry?.image ?? "", command: entry?.command ?? ""))
             seen.insert(parent)
             current = parent
         }
         return chain
+    }
+
+    /// The pid-only projection of `ancestorRecords(of:maxDepth:)` — see that
+    /// method for the walk/termination semantics, which this shares exactly.
+    func ancestry(of pid: Int32, maxDepth: Int = 20) -> [Int32] {
+        ancestorRecords(of: pid, maxDepth: maxDepth).map(\.pid)
     }
 }
 
@@ -252,10 +269,21 @@ final class ProcessMonitor: ObservableObject {
         for proc in newProcs {
             totalSeen += 1
 
+            // Computed once per process and reused below both for the Sigma
+            // record's Ancestor* fields and for the chain correlator's
+            // ancestry — walking the cache twice would be redundant work for
+            // identical results.
+            let ancestors = parentCache.ancestorRecords(of: proc.id)
+
             var record: [String: String] = ["CommandLine": proc.command, "Image": proc.image, "User": proc.user]
             if let parentImage = parentCache.image(for: proc.ppid) { record["ParentImage"] = parentImage }
             if let parentCommand = parentCache.command(for: proc.ppid) { record["ParentCommandLine"] = parentCommand }
             if let parentUser = parentCache.user(for: proc.ppid) { record["ParentUser"] = parentUser }
+            // ";"-joined, nearest ancestor first, so a user rule can express
+            // e.g. `AncestorCommandLines|contains: claude` to match anywhere
+            // up the tree rather than only the immediate parent.
+            record["AncestorImages"] = ancestors.map(\.image).joined(separator: ";")
+            record["AncestorCommandLines"] = ancestors.map(\.command).joined(separator: ";")
 
             let rawMatches: [MatchedRule] = activeRules.compactMap { rule in
                 guard SigmaMatcher.matches(rule, record: record) else { return nil }
@@ -277,8 +305,13 @@ final class ProcessMonitor: ObservableObject {
                                              bornAt: Date(), angle: angle))
             } else {
                 matchedThisTick += 1
+                let provenance = ProvenanceClassifier.classify(
+                    ancestorImages: ancestors.map(\.image),
+                    ancestorCommandLines: ancestors.map(\.command)
+                ).map(\.label)
                 let event = ProcessEvent(pid: proc.id, ppid: proc.ppid, executable: proc.executable,
-                                          command: proc.command, rules: matches, timestamp: Date())
+                                          command: proc.command, rules: matches, timestamp: Date(),
+                                          provenance: provenance)
                 events.insert(event, at: 0)
                 if events.count > 300 { events.removeLast(events.count - 300) }
                 eventStore?.append(event)
@@ -293,11 +326,10 @@ final class ProcessMonitor: ObservableObject {
                 let techniques = matches.map(\.technique).joined(separator: "; ")
                 DiagnosticsLog.write("[\(event.topSeverity.label)] pid=\(proc.id) \(proc.executable) — \(techniques) — risk=\(Int(riskScore))")
 
-                let ancestry = parentCache.ancestry(of: proc.id)
                 if let detection = chainCorrelator.register(
                     eventID: event.id, pid: proc.id, executable: proc.executable,
                     ruleNames: Set(matches.map(\.name)), techniques: Set(matches.map(\.technique)),
-                    severity: event.topSeverity, timestamp: event.timestamp, ancestry: ancestry
+                    severity: event.topSeverity, timestamp: event.timestamp, ancestry: ancestors.map(\.pid)
                 ) {
                     ingestExternal(Self.chainEvent(from: detection, pid: proc.id, ppid: proc.ppid))
                 }
