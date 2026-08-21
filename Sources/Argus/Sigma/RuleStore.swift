@@ -54,6 +54,26 @@ final class RuleStore: ObservableObject {
         saveDisabledState()
     }
 
+    /// Enabling/disabling a detection rule is security-relevant — an
+    /// attacker with local execution could otherwise blind a rule silently
+    /// before running the technique it detects. Require Touch ID/password
+    /// and log every attempt (granted or denied) to the diagnostic log,
+    /// independent of whether the toggle itself succeeds.
+    func requestToggle(_ rule: SigmaRule, completion: @escaping (Bool) -> Void = { _ in }) {
+        let willEnable = !isEnabled(rule)
+        let verb = willEnable ? "enable" : "disable"
+        RuleAuthenticator.authenticate(reason: "Authenticate to \(verb) the rule \u{201c}\(rule.title)\u{201d}.") { [weak self] granted in
+            guard let self else { return }
+            if granted {
+                self.toggle(rule)
+                DiagnosticsLog.write("rule \(verb)d: \(rule.id) (\(rule.title))")
+            } else {
+                DiagnosticsLog.write("rule \(verb) denied (authentication failed): \(rule.id) (\(rule.title))")
+            }
+            completion(granted)
+        }
+    }
+
     func revealUserRulesFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([userRulesDirectory])
     }

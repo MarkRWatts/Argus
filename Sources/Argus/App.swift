@@ -1,7 +1,18 @@
 import SwiftUI
+import AppKit
+
+/// Argus runs `LSUIElement` (menu-bar-only, no Dock icon) — closing the main
+/// window should hide it, not quit the app, since the menu bar item is the
+/// app's actual home.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+}
 
 @main
 struct ArgusApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var monitor = ProcessMonitor()
     @StateObject private var allowlist = AllowlistStore()
     @StateObject private var settings = AppSettings()

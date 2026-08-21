@@ -539,8 +539,8 @@ struct RuleManagementPanel: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredRules) { rule in
-                        RuleManagementRow(rule: rule, isEnabled: ruleStore.isEnabled(rule)) {
-                            ruleStore.toggle(rule)
+                        RuleManagementRow(rule: rule, isEnabled: ruleStore.isEnabled(rule)) { completion in
+                            ruleStore.requestToggle(rule, completion: completion)
                         }
                         Divider().background(Theme.border)
                     }
@@ -601,19 +601,30 @@ struct RuleManagementPanel: View {
 struct RuleManagementRow: View {
     let rule: SigmaRule
     let isEnabled: Bool
-    let onToggle: () -> Void
+    let onToggle: (@escaping (Bool) -> Void) -> Void
     @State private var expanded = false
+    @State private var isAuthenticating = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 8) {
-                Button(action: onToggle) {
-                    Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 13))
-                        .foregroundStyle(isEnabled ? Theme.color(for: rule.severity) : Theme.dim)
+                Button {
+                    isAuthenticating = true
+                    onToggle { _ in isAuthenticating = false }
+                } label: {
+                    if isAuthenticating {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 13, height: 13)
+                    } else {
+                        Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(isEnabled ? Theme.color(for: rule.severity) : Theme.dim)
+                    }
                 }
                 .buttonStyle(.plain)
-                .help(isEnabled ? "Disable this rule" : "Enable this rule")
+                .disabled(isAuthenticating)
+                .help(isEnabled ? "Disable this rule (Touch ID/password required)" : "Enable this rule (Touch ID/password required)")
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(rule.title)

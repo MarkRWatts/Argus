@@ -39,7 +39,9 @@ without requiring enterprise EDR tooling or kernel entitlements.
   command line and explanation.
 - **Activity sparkline** — rolling 5-minute histogram of matched events.
 - **Menu bar icon** — tints calm teal → amber → red with current posture, so
-  you get the gist without opening the window.
+  you get the gist without opening the window. Argus runs as a menu-bar-only
+  app (no Dock icon, no Cmd+Tab entry); closing the main window just hides
+  it — reopen it any time via "Open Argus" in the menu bar dropdown.
 - **Search & severity filters** — a search field (matches executable,
   command, or technique) plus toggleable severity chips above the feed.
 - **Session drill-down** — click the pid on any event to focus the feed on
@@ -117,6 +119,13 @@ description and raw YAML, and toggle any rule off without deleting it
 "Rules folder" button reveals in Finder, then hit "Reload" — no rebuild
 required. A rule you write there shows up tagged "Your rules" in the
 browser, exactly like the bundled ones.
+
+Toggling a rule requires Touch ID (or your account password as fallback) —
+enabling/disabling detections is exactly the kind of thing a LOLBin-style
+attacker with local execution would want to do silently before running the
+technique it catches, so it isn't a free, unaudited click. Every attempt —
+granted or denied, either direction — is written to
+`~/Library/Logs/Argus/argus.log`.
 
 ## Managing false positives
 
