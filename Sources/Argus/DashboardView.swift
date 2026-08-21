@@ -2,8 +2,10 @@ import SwiftUI
 
 struct DashboardView: View {
     @ObservedObject var monitor: ProcessMonitor
+    @ObservedObject var allowlist: AllowlistStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var uptimeStart = Date()
+    @State private var showingAllowlist = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -50,6 +52,15 @@ struct DashboardView: View {
                 statField(label: "PROCESSES SEEN", value: "\(monitor.totalSeen)")
                 statField(label: "SAMPLES", value: "\(monitor.sampleCount)")
                 statField(label: "RULES LOADED", value: "\(RuleEngine.catalog.count)")
+                Button {
+                    showingAllowlist = true
+                } label: {
+                    statField(label: "ALLOWLISTED", value: "\(allowlist.entries.count)")
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingAllowlist, arrowEdge: .bottom) {
+                    AllowlistPanel(allowlist: allowlist)
+                }
             }
         }
         .padding(.horizontal, 20)
@@ -136,6 +147,14 @@ struct DashboardView: View {
                     .tracking(1.5)
                     .foregroundStyle(Theme.muted)
                 Spacer()
+                if monitor.suppressedCount > 0 {
+                    Text("\(monitor.suppressedCount) suppressed by allowlist")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.dim)
+                    Text("·")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.dim)
+                }
                 Text("newest first")
                     .font(.system(size: 9))
                     .foregroundStyle(Theme.dim)
@@ -160,7 +179,7 @@ struct DashboardView: View {
                 ScrollView {
                     LazyVStack(spacing: 1) {
                         ForEach(monitor.events) { event in
-                            EventRow(event: event)
+                            EventRow(event: event, allowlist: allowlist)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -173,6 +192,7 @@ struct DashboardView: View {
 
 struct EventRow: View {
     let event: ProcessEvent
+    let allowlist: AllowlistStore
     @State private var expanded = false
 
     private static let timeFormatter: DateFormatter = {
@@ -239,5 +259,68 @@ struct EventRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            ForEach(event.rules) { rule in
+                Button("Allow future \u{201c}\(rule.name)\u{201d} alerts from \(event.executable)") {
+                    allowlist.allow(ruleName: rule.name, executable: event.executable)
+                }
+            }
+        }
+    }
+}
+
+/// Popover from the header's "ALLOWLISTED" stat — review and revoke
+/// suppression rules. Nothing here is hidden: every automatic suppression
+/// is a decision the user made explicitly by right-clicking an event.
+struct AllowlistPanel: View {
+    @ObservedObject var allowlist: AllowlistStore
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("ALLOWLIST")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.5)
+                .foregroundStyle(Theme.muted)
+
+            if allowlist.entries.isEmpty {
+                Text("Nothing allowlisted. Right-click an event in the feed to stop alerting on it.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: 260)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(allowlist.entries) { entry in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.ruleName)
+                                    .font(Theme.mono(11, weight: .semibold))
+                                Text("\(entry.executable) · since \(Self.dateFormatter.string(from: entry.createdAt))")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Theme.dim)
+                            }
+                            Spacer()
+                            Button {
+                                allowlist.remove(entry.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(Theme.dim)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(width: 280)
+            }
+        }
+        .padding(14)
+        .background(Theme.bg)
+        .foregroundStyle(Theme.text)
     }
 }

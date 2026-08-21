@@ -17,6 +17,7 @@ final class ProcessMonitor: ObservableObject {
     @Published private(set) var riskScore: Double = 0
     @Published private(set) var totalSeen: Int = 0
     @Published private(set) var sampleCount: Int = 0
+    @Published private(set) var suppressedCount: Int = 0
     @Published private(set) var activityLog: [(Date, Int)] = [] // (time, matched-event count) per tick, for the sparkline
 
     var riskLevel: Severity {
@@ -31,9 +32,14 @@ final class ProcessMonitor: ObservableObject {
     private var knownPIDs: Set<Int32> = []
     private var baselined = false
     private var timerTask: Task<Void, Never>?
+    private var allowlist: AllowlistStore?
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private let sampleIntervalNanos: UInt64 = 1_200_000_000
     private let decayFactor = pow(0.5, 1.2 / 55.0) // ~55s half-life
+
+    func configure(allowlist: AllowlistStore) {
+        self.allowlist = allowlist
+    }
 
     func start() {
         guard timerTask == nil else { return }
@@ -74,7 +80,15 @@ final class ProcessMonitor: ObservableObject {
         var matchedThisTick = 0
         for proc in newProcs {
             totalSeen += 1
-            let matches = RuleEngine.evaluate(proc.command)
+            let rawMatches = RuleEngine.evaluate(proc.command)
+            let matches: [MatchedRule]
+            if let allowlist {
+                matches = AllowlistFilter.apply(rawMatches, executable: proc.executable, isAllowed: allowlist.isAllowed)
+            } else {
+                matches = rawMatches
+            }
+            suppressedCount += rawMatches.count - matches.count
+
             let angle = Double.random(in: 0..<360)
             if matches.isEmpty {
                 orbitNodes.append(OrbitNode(id: UUID(), pid: proc.id, ppid: proc.ppid,
@@ -100,7 +114,7 @@ final class ProcessMonitor: ObservableObject {
         trimActivityLog()
 
         if sampleCount % 150 == 0 {
-            DiagnosticsLog.write("heartbeat — samples=\(sampleCount) seen=\(totalSeen) events=\(events.count) risk=\(Int(riskScore))")
+            DiagnosticsLog.write("heartbeat — samples=\(sampleCount) seen=\(totalSeen) events=\(events.count) suppressed=\(suppressedCount) risk=\(Int(riskScore))")
         }
     }
 

@@ -3,12 +3,16 @@ import SwiftUI
 @main
 struct ArgusApp: App {
     @StateObject private var monitor = ProcessMonitor()
+    @StateObject private var allowlist = AllowlistStore()
 
     var body: some Scene {
         Window("Argus", id: "main") {
-            DashboardView(monitor: monitor)
+            DashboardView(monitor: monitor, allowlist: allowlist)
                 .frame(minWidth: 980, minHeight: 680)
-                .onAppear { monitor.start() }
+                .onAppear {
+                    monitor.configure(allowlist: allowlist)
+                    monitor.start()
+                }
                 .preferredColorScheme(.dark)
         }
         .windowResizability(.contentMinSize)

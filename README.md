@@ -39,6 +39,9 @@ without requiring enterprise EDR tooling or kernel entitlements.
 - **Menu bar icon** — tints calm teal → amber → red with current posture, so
   you get the gist without opening the window.
 
+The app is dark-only by design, matching a monitoring-console identity — it
+does not follow the system light/dark appearance toggle.
+
 ## How detection works
 
 `ProcessMonitor` samples `ps -axww -o pid,ppid,command` roughly every 1.2s
@@ -58,6 +61,17 @@ tool better than an enterprise agent. The tradeoff: a process that starts and
 exits within the ~1.2s window can be missed as an individual event (though a
 parent shell invoking it inline is still visible, since the parent's full
 command line is what `ps` reports).
+
+## Managing false positives
+
+If a rule fires on something you know is your own legitimate automation,
+right-click the event in the feed and choose "Allow future … alerts from
+…". This suppresses that specific (rule, executable) pair going forward —
+allowlisting one automation's use of `osascript` won't blind Argus to a
+*different* technique that happens to also involve `osascript`. Review or
+revoke allowlist entries from the "ALLOWLISTED" counter in the header.
+Nothing is suppressed silently: the header also shows a running count of
+events an allowlist rule has hidden.
 
 ## Running it
 
@@ -79,6 +93,19 @@ independent of the UI:
 tail -f ~/Library/Logs/Argus/argus.log
 ```
 
+Allowlist decisions persist to `~/Library/Application Support/Argus/allowlist.json`.
+
+## Testing
+
+```bash
+swift test
+```
+
+Covers the full rule catalog (one positive sample per rule, plus a set of
+everyday commands that must never match), the allowlist filtering logic, and
+allowlist persistence. Any new rule added to `RuleEngine.catalog` without a
+corresponding sample in `RuleEngineTests` fails the suite by design.
+
 ## Project layout
 
 ```
@@ -88,13 +115,17 @@ Sources/Argus/
   Models.swift                 Severity, RawProcess, ProcessEvent, OrbitNode
   RuleEngine.swift              LOLBin pattern catalog
   ProcessMonitor.swift          ps polling, diffing, risk-score decay
+  AllowlistStore.swift          persisted (rule, executable) suppression
   DiagnosticsLog.swift          on-disk activity log
   Theme.swift                  color/type tokens
   OrbitView.swift               Canvas-based radial visualization
   GaugeView.swift               arced risk meter
   SparklineView.swift           activity histogram
-  DashboardView.swift           main window layout + event feed
+  DashboardView.swift           main window layout, event feed, allowlist panel
   MenuBarPanel.swift            compact menu-bar popover
+Tests/ArgusTests/
+  RuleEngineTests.swift          catalog coverage + benign-command negatives
+  AllowlistTests.swift           filter logic + persistence round-trip
 Resources/
   Info.plist                   app bundle metadata
   icon_gen.swift                generates the app icon programmatically
