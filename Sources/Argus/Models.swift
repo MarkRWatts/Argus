@@ -56,6 +56,10 @@ struct RawProcess: Identifiable, Equatable {
     /// this normalization, every imported rule's `Image|endswith: '/curl'`
     /// would silently never match ordinary typed shell usage.
     let image: String
+    /// The owning account's short username, as reported by `ps -o user`.
+    /// macOS short usernames never contain spaces, which is what makes the
+    /// fixed-width `pid ppid user command...` column parse tractable.
+    let user: String
 }
 
 /// A process that tripped one or more rules — what the dashboard actually shows.
