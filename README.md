@@ -232,3 +232,11 @@ scripts/build_app.sh            release build → signed .app bundle (bundles Re
 Not a System Extension, not a blocker/firewall, not a cloud product. It
 observes and visualizes; it takes no automated action on your processes, and
 nothing about your machine ever leaves it.
+
+## License
+
+Argus's own code and the rules under `Resources/Rules/custom/` are MIT —
+see [LICENSE](LICENSE). The rules imported verbatim from SigmaHQ under
+`Resources/Rules/imported/` and `imported-portable/` remain under the
+[Detection Rule License (DRL) 1.1](https://github.com/SigmaHQ/Detection-Rule-License)
+— see [Resources/Rules/NOTICE.md](Resources/Rules/NOTICE.md).

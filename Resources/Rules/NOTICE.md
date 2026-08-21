@@ -18,6 +18,10 @@ credit belongs to the original SigmaHQ contributors, not to this project.
 
 ## `custom/`
 
+Licensed under the same MIT license as the rest of Argus (see the
+top-level `LICENSE` file), not DRL 1.1 — these are original content, not
+imported.
+
 `argus-gap-fill.yml` contains 10 rules authored specifically for Argus,
 covering macOS LOLBin techniques the imported sets didn't have (TCC.db
 tampering, browser cookie/session theft, pipe-to-interpreter fetch-and-
