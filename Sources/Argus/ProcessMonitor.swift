@@ -18,6 +18,7 @@ final class ProcessMonitor: ObservableObject {
     @Published private(set) var totalSeen: Int = 0
     @Published private(set) var sampleCount: Int = 0
     @Published private(set) var suppressedCount: Int = 0
+    @Published private(set) var historicalEventCount: Int = 0
     @Published private(set) var activityLog: [(Date, Int)] = [] // (time, matched-event count) per tick, for the sparkline
 
     var riskLevel: Severity {
@@ -33,12 +34,22 @@ final class ProcessMonitor: ObservableObject {
     private var baselined = false
     private var timerTask: Task<Void, Never>?
     private var allowlist: AllowlistStore?
+    private var eventStore: EventStore?
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private let sampleIntervalNanos: UInt64 = 1_200_000_000
     private let decayFactor = pow(0.5, 1.2 / 55.0) // ~55s half-life
 
     func configure(allowlist: AllowlistStore) {
         self.allowlist = allowlist
+    }
+
+    /// Loads recent persisted history into the live feed so a restart no
+    /// longer means losing everything that happened before it.
+    func configure(eventStore: EventStore) {
+        self.eventStore = eventStore
+        let all = eventStore.loadAll()
+        historicalEventCount = all.count
+        events = Array(all.suffix(300).reversed())
     }
 
     func start() {
@@ -100,6 +111,8 @@ final class ProcessMonitor: ObservableObject {
                                           command: proc.command, rules: matches, timestamp: Date())
                 events.insert(event, at: 0)
                 if events.count > 300 { events.removeLast(events.count - 300) }
+                eventStore?.append(event)
+                historicalEventCount += 1
                 riskScore = min(100, riskScore + event.topSeverity.weight)
                 orbitNodes.append(OrbitNode(id: event.id, pid: proc.id, ppid: proc.ppid,
                                              severity: event.topSeverity, label: proc.executable,

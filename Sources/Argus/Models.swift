@@ -1,6 +1,6 @@
 import Foundation
 
-enum Severity: Int, Comparable, CaseIterable {
+enum Severity: Int, Comparable, CaseIterable, Codable {
     case info = 0
     case watch = 1
     case elevated = 2
@@ -27,12 +27,20 @@ enum Severity: Int, Comparable, CaseIterable {
     }
 }
 
-struct MatchedRule: Identifiable {
-    let id = UUID()
+struct MatchedRule: Identifiable, Codable {
+    let id: UUID
     let name: String
     let severity: Severity
     let technique: String
     let explanation: String
+
+    init(id: UUID = UUID(), name: String, severity: Severity, technique: String, explanation: String) {
+        self.id = id
+        self.name = name
+        self.severity = severity
+        self.technique = technique
+        self.explanation = explanation
+    }
 }
 
 /// A single OS process observed via a `ps` sample.
@@ -44,14 +52,25 @@ struct RawProcess: Identifiable, Equatable {
 }
 
 /// A process that tripped one or more rules — what the dashboard actually shows.
-struct ProcessEvent: Identifiable {
-    let id = UUID()
+/// Codable so it can round-trip through EventStore's on-disk history log.
+struct ProcessEvent: Identifiable, Codable {
+    let id: UUID
     let pid: Int32
     let ppid: Int32
     let executable: String
     let command: String
     let rules: [MatchedRule]
     let timestamp: Date
+
+    init(id: UUID = UUID(), pid: Int32, ppid: Int32, executable: String, command: String, rules: [MatchedRule], timestamp: Date) {
+        self.id = id
+        self.pid = pid
+        self.ppid = ppid
+        self.executable = executable
+        self.command = command
+        self.rules = rules
+        self.timestamp = timestamp
+    }
 
     var topSeverity: Severity { rules.map(\.severity).max() ?? .info }
 }

@@ -38,6 +38,15 @@ without requiring enterprise EDR tooling or kernel entitlements.
 - **Activity sparkline** — rolling 5-minute histogram of matched events.
 - **Menu bar icon** — tints calm teal → amber → red with current posture, so
   you get the gist without opening the window.
+- **Search & severity filters** — a search field (matches executable,
+  command, or technique) plus toggleable severity chips above the feed.
+- **Session drill-down** — click the pid on any event to focus the feed on
+  every event sharing that process's parent, so a multi-step chain reads as
+  one group instead of scattered rows. "Clear" returns to the full feed.
+- **Activity history** — a day-by-day heatmap (last ~12 weeks) and a
+  top-techniques chart, from the "HISTORY" stat in the header. Matched
+  events persist to disk now, so this — and the event feed itself — survives
+  a restart instead of resetting to empty.
 
 The app is dark-only by design, matching a monitoring-console identity — it
 does not follow the system light/dark appearance toggle.
@@ -94,6 +103,10 @@ tail -f ~/Library/Logs/Argus/argus.log
 ```
 
 Allowlist decisions persist to `~/Library/Application Support/Argus/allowlist.json`.
+Matched events persist to `~/Library/Application Support/Argus/events.jsonl`
+(newline-delimited JSON, capped at the most recent 5000 — trimmed
+periodically rather than on every write, so a live tail will occasionally
+see the file shrink back down).
 
 ## Testing
 
@@ -102,9 +115,12 @@ swift test
 ```
 
 Covers the full rule catalog (one positive sample per rule, plus a set of
-everyday commands that must never match), the allowlist filtering logic, and
-allowlist persistence. Any new rule added to `RuleEngine.catalog` without a
-corresponding sample in `RuleEngineTests` fails the suite by design.
+everyday commands that must never match), the allowlist filtering logic and
+persistence, event history persistence and trimming, the event feed's
+search/severity/session filter logic, and the history heatmap's day-bucketing
+and technique-frequency aggregation. Any new rule added to
+`RuleEngine.catalog` without a corresponding sample in `RuleEngineTests`
+fails the suite by design.
 
 ## Project layout
 
@@ -112,20 +128,26 @@ corresponding sample in `RuleEngineTests` fails the suite by design.
 Package.swift                  Swift Package Manager manifest (macOS 13+)
 Sources/Argus/
   App.swift                    App entry point — main window + MenuBarExtra
-  Models.swift                 Severity, RawProcess, ProcessEvent, OrbitNode
+  Models.swift                 Severity, RawProcess, ProcessEvent, OrbitNode (Codable)
   RuleEngine.swift              LOLBin pattern catalog
   ProcessMonitor.swift          ps polling, diffing, risk-score decay
   AllowlistStore.swift          persisted (rule, executable) suppression
+  EventStore.swift              persisted event history (events.jsonl)
+  EventFilter.swift             search/severity/session filter logic
+  HistoryStats.swift             day-bucketing + technique-frequency aggregation
   DiagnosticsLog.swift          on-disk activity log
   Theme.swift                  color/type tokens
   OrbitView.swift               Canvas-based radial visualization
   GaugeView.swift               arced risk meter
   SparklineView.swift           activity histogram
-  DashboardView.swift           main window layout, event feed, allowlist panel
+  DashboardView.swift           main window, event feed, filters, all panels
   MenuBarPanel.swift            compact menu-bar popover
 Tests/ArgusTests/
   RuleEngineTests.swift          catalog coverage + benign-command negatives
   AllowlistTests.swift           filter logic + persistence round-trip
+  EventStoreTests.swift          history persistence + trimming
+  EventFilterTests.swift         search/severity/session filter logic
+  HistoryStatsTests.swift        day-bucketing + technique-frequency aggregation
 Resources/
   Info.plist                   app bundle metadata
   icon_gen.swift                generates the app icon programmatically
