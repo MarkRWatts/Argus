@@ -466,7 +466,7 @@ struct EventRow: View {
         .contextMenu {
             ForEach(event.rules) { rule in
                 Button("Allow future \u{201c}\(rule.name)\u{201d} alerts from \(event.executable)") {
-                    allowlist.allow(ruleName: rule.name, executable: event.executable)
+                    allowlist.requestAllow(ruleName: rule.name, executable: event.executable)
                 }
             }
         }
@@ -539,8 +539,8 @@ struct RuleManagementPanel: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredRules) { rule in
-                        RuleManagementRow(rule: rule, isEnabled: ruleStore.isEnabled(rule)) {
-                            ruleStore.toggle(rule)
+                        RuleManagementRow(rule: rule, isEnabled: ruleStore.isEnabled(rule)) { completion in
+                            ruleStore.requestToggle(rule, completion: completion)
                         }
                         Divider().background(Theme.border)
                     }
@@ -601,19 +601,30 @@ struct RuleManagementPanel: View {
 struct RuleManagementRow: View {
     let rule: SigmaRule
     let isEnabled: Bool
-    let onToggle: () -> Void
+    let onToggle: (@escaping (Bool) -> Void) -> Void
     @State private var expanded = false
+    @State private var isAuthenticating = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 8) {
-                Button(action: onToggle) {
-                    Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 13))
-                        .foregroundStyle(isEnabled ? Theme.color(for: rule.severity) : Theme.dim)
+                Button {
+                    isAuthenticating = true
+                    onToggle { _ in isAuthenticating = false }
+                } label: {
+                    if isAuthenticating {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 13, height: 13)
+                    } else {
+                        Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(isEnabled ? Theme.color(for: rule.severity) : Theme.dim)
+                    }
                 }
                 .buttonStyle(.plain)
-                .help(isEnabled ? "Disable this rule" : "Enable this rule")
+                .disabled(isAuthenticating)
+                .help(isEnabled ? "Disable this rule (Touch ID/password required)" : "Enable this rule (Touch ID/password required)")
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(rule.title)
@@ -692,22 +703,8 @@ struct AllowlistPanel: View {
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(allowlist.entries) { entry in
-                        HStack(alignment: .top, spacing: 8) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.ruleName)
-                                    .font(Theme.mono(11, weight: .semibold))
-                                Text("\(entry.executable) · since \(Self.dateFormatter.string(from: entry.createdAt))")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Theme.dim)
-                            }
-                            Spacer()
-                            Button {
-                                allowlist.remove(entry.id)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(Theme.dim)
-                            }
-                            .buttonStyle(.plain)
+                        AllowlistRow(entry: entry, dateFormatter: Self.dateFormatter) {
+                            allowlist.requestRemove(entry.id, completion: $0)
                         }
                     }
                 }
@@ -717,6 +714,42 @@ struct AllowlistPanel: View {
         .padding(14)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
+    }
+}
+
+private struct AllowlistRow: View {
+    let entry: AllowlistEntry
+    let dateFormatter: DateFormatter
+    let onRemove: (@escaping (Bool) -> Void) -> Void
+    @State private var isAuthenticating = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.ruleName)
+                    .font(Theme.mono(11, weight: .semibold))
+                Text("\(entry.executable) · since \(dateFormatter.string(from: entry.createdAt))")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.dim)
+            }
+            Spacer()
+            Button {
+                isAuthenticating = true
+                onRemove { _ in isAuthenticating = false }
+            } label: {
+                if isAuthenticating {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Theme.dim)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isAuthenticating)
+            .help("Revoke this allowlist entry (Touch ID/password required)")
+        }
     }
 }
 

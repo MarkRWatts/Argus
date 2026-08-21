@@ -4,6 +4,8 @@ import SwiftUI
 /// opening the full dashboard window.
 struct MenuBarPanel: View {
     @ObservedObject var monitor: ProcessMonitor
+    var dismissFlyout: () -> Void = {}
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -50,6 +52,19 @@ struct MenuBarPanel: View {
                     }
                 }
             }
+
+            Divider().background(Theme.border)
+
+            Button {
+                dismissFlyout()
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Label("Open Argus", systemImage: "macwindow")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accent)
 
             Divider().background(Theme.border)
 

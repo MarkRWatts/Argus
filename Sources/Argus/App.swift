@@ -1,7 +1,33 @@
 import SwiftUI
+import AppKit
+
+/// Argus runs `LSUIElement` (menu-bar-only by default, no Dock icon) —
+/// closing the main window should hide it, not quit the app, since the menu
+/// bar item is the app's actual home. But a Dock icon is what makes
+/// Cmd+Tab and "click the Dock to get back" work, so we show one for as
+/// long as the window is actually on screen and drop it again once the
+/// window closes, rather than hiding it permanently.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.addObserver(self, selector: #selector(updateActivationPolicy), name: NSWindow.didBecomeMainNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(updateActivationPolicy), name: NSWindow.willCloseNotification, object: nil)
+    }
+
+    @objc private func updateActivationPolicy() {
+        DispatchQueue.main.async {
+            let hasVisibleWindow = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
+            NSApp.setActivationPolicy(hasVisibleWindow ? .regular : .accessory)
+        }
+    }
+}
 
 @main
 struct ArgusApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var monitor = ProcessMonitor()
     @StateObject private var allowlist = AllowlistStore()
     @StateObject private var settings = AppSettings()
@@ -27,11 +53,23 @@ struct ArgusApp: App {
         .commandsRemoved()
 
         MenuBarExtra {
-            MenuBarPanel(monitor: monitor)
+            MenuBarPanel(monitor: monitor, dismissFlyout: dismissMenuBarFlyout)
         } label: {
             Image(systemName: "eye.fill")
                 .foregroundStyle(Theme.color(for: monitor.riskLevel))
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// `.menuBarExtraStyle(.window)`'s popover is a plain NSWindow under the
+    /// hood, but it apparently overrides `close()`'s should-close handling
+    /// (both `keyWindow?.close()` and toggling `isInserted` failed to
+    /// dismiss it in practice). `orderOut(nil)` skips that machinery
+    /// entirely — it just hides the window — so hide every visible window
+    /// that isn't the main dashboard.
+    private func dismissMenuBarFlyout() {
+        for window in NSApp.windows where window.isVisible && window.title != "Argus" {
+            window.orderOut(nil)
+        }
     }
 }

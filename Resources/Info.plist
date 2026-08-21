@@ -27,6 +27,6 @@
     <key>NSHumanReadableCopyright</key>
     <string>Local-only process activity monitor. No data leaves this Mac.</string>
     <key>LSUIElement</key>
-    <false/>
+    <true/>
 </dict>
 </plist>
