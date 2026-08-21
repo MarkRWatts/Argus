@@ -149,4 +149,56 @@ final class RuleStoreTests: XCTestCase {
         XCTAssertEqual(store.rules.count, 1, "a non-process_creation category should be skipped")
         XCTAssertEqual(store.skippedIncompatibleCount, 1)
     }
+
+    func testStoreWiredWithIntegrityGuardRecordsMACOnSave() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bundled = root.appendingPathComponent("bundled")
+        let user = root.appendingPathComponent("user")
+        let state = root.appendingPathComponent("rules-state.json")
+        try? FileManager.default.createDirectory(at: bundled.appendingPathComponent("custom"), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: bundled.appendingPathComponent("imported"), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: bundled.appendingPathComponent("imported-portable"), withIntermediateDirectories: true)
+
+        let fixedKeyGuard = IntegrityGuard(
+            keyProvider: FixedKeyProviderForTests(data: Data(repeating: 0x11, count: 32)),
+            sidecarURL: root.appendingPathComponent("integrity.json")
+        )
+
+        let sampleRule = """
+        title: Test Rule
+        id: 55555555-5555-5555-5555-555555555555
+        status: stable
+        description: A rule for testing.
+        author: Test
+        date: 2026-08-21
+        tags:
+            - attack.execution
+            - attack.t1059
+        logsource:
+            category: process_creation
+            product: macos
+        detection:
+            selection:
+                CommandLine|contains: 'dangerous-thing'
+            condition: selection
+        level: high
+        """
+        try? sampleRule.write(to: bundled.appendingPathComponent("custom/test.yml"), atomically: true, encoding: .utf8)
+
+        let store = RuleStore(bundledRulesDirectory: bundled, userRulesDirectory: user, stateFileURL: state, integrityGuard: fixedKeyGuard)
+        // No rules-state.json exists yet — nothing has been authenticated,
+        // nothing to verify.
+        XCTAssertEqual(store.integrityVerdict, .unverifiable)
+        XCTAssertEqual(store.rules.count, 1)
+
+        store.toggle(store.rules[0])
+        XCTAssertEqual(fixedKeyGuard.verify(state), .verified, "saveDisabledState should have recorded a MAC via the injected guard")
+    }
+}
+
+/// Local fixed-key provider so this test doesn't depend on
+/// `IntegrityGuardTests`'s private helper across files.
+private struct FixedKeyProviderForTests: IntegrityKeyProvider {
+    let data: Data?
+    func key() -> Data? { data }
 }

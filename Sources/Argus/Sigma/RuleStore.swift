@@ -15,23 +15,31 @@ final class RuleStore: ObservableObject {
     /// this app can actually evaluate (see `isCompatibleLogsource`) — e.g. a
     /// Windows-only rule dropped into the user rules folder by mistake.
     @Published private(set) var skippedIncompatibleCount: Int = 0
+    /// Result of verifying `rules-state.json` against the last MAC recorded
+    /// by an authenticated write, computed once at init. See `IntegrityGuard`
+    /// — the app checks this after construction to decide whether to report
+    /// a tamper event; the store itself doesn't emit events.
+    private(set) var integrityVerdict: IntegrityVerdict
 
     private let bundledRulesDirectory: URL?
     let userRulesDirectory: URL
-    private let stateFileURL: URL
+    let stateFileURL: URL
+    private let integrityGuard: IntegrityGuard
 
     var activeRules: [SigmaRule] { rules.filter { !disabledRuleIDs.contains($0.id) } }
 
-    init(bundledRulesDirectory: URL? = nil, userRulesDirectory: URL? = nil, stateFileURL: URL? = nil) {
+    init(bundledRulesDirectory: URL? = nil, userRulesDirectory: URL? = nil, stateFileURL: URL? = nil, integrityGuard: IntegrityGuard = .shared) {
         let appSupport = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Argus", isDirectory: true)
         self.bundledRulesDirectory = bundledRulesDirectory ?? Bundle.main.resourceURL?.appendingPathComponent("Rules", isDirectory: true)
         self.userRulesDirectory = userRulesDirectory ?? appSupport.appendingPathComponent("rules", isDirectory: true)
         self.stateFileURL = stateFileURL ?? appSupport.appendingPathComponent("rules-state.json")
+        self.integrityGuard = integrityGuard
         try? FileManager.default.createDirectory(at: self.userRulesDirectory, withIntermediateDirectories: true)
         // Keep the shared Argus support directory owner-only (see EventStore).
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupport.path)
 
+        integrityVerdict = integrityGuard.verify(self.stateFileURL)
         loadDisabledState()
         reload()
     }
@@ -145,5 +153,6 @@ final class RuleStore: ObservableObject {
     private func saveDisabledState() {
         guard let data = try? JSONEncoder().encode(disabledRuleIDs) else { return }
         try? data.write(to: stateFileURL, options: .atomic)
+        integrityGuard.recordAuthenticatedWrite(of: stateFileURL)
     }
 }

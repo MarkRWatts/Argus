@@ -22,10 +22,16 @@ struct AllowlistEntry: Identifiable, Codable, Equatable {
 @MainActor
 final class AllowlistStore: ObservableObject {
     @Published private(set) var entries: [AllowlistEntry] = []
+    /// Result of verifying `allowlist.json` against the last MAC recorded by
+    /// an authenticated write, computed once at init. See `IntegrityGuard` —
+    /// the app checks this after construction to decide whether to report a
+    /// tamper event; the store itself doesn't emit events.
+    private(set) var integrityVerdict: IntegrityVerdict
 
-    private let fileURL: URL
+    let fileURL: URL
+    private let integrityGuard: IntegrityGuard
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, integrityGuard: IntegrityGuard = .shared) {
         if let fileURL {
             self.fileURL = fileURL
         } else {
@@ -36,6 +42,8 @@ final class AllowlistStore: ObservableObject {
             try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
             self.fileURL = dir.appendingPathComponent("allowlist.json")
         }
+        self.integrityGuard = integrityGuard
+        integrityVerdict = integrityGuard.verify(self.fileURL)
         load()
     }
 
@@ -102,6 +110,7 @@ final class AllowlistStore: ObservableObject {
     private func save() {
         guard let data = try? JSONEncoder().encode(entries) else { return }
         try? data.write(to: fileURL, options: .atomic)
+        integrityGuard.recordAuthenticatedWrite(of: fileURL)
     }
 }
 

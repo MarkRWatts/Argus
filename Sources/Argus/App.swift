@@ -78,6 +78,21 @@ struct ArgusApp: App {
         }
         watcher.start()
 
+        // IntegrityGuard verified rules-state.json/allowlist.json against
+        // their last authenticated-write MAC during each store's own init
+        // (above). A `.tampered` verdict means the file changed outside
+        // Argus's Touch ID/password-gated write path — exactly what a local
+        // attacker would do to blind a rule or re-enable a suppressed alert
+        // silently — so surface it as a critical event in the feed.
+        // `.baselineEstablished`/`.unverifiable` are informational only and
+        // already logged by IntegrityGuard itself.
+        for (verdict, fileURL) in [(rules.integrityVerdict, rules.stateFileURL), (allowlistStore.integrityVerdict, allowlistStore.fileURL)] {
+            if verdict == .tampered {
+                DiagnosticsLog.write("integrity-guard: tamper detected outside Argus for \(fileURL.lastPathComponent)")
+                m.ingestExternal(IntegrityGuard.tamperEvent(for: fileURL))
+            }
+        }
+
         _monitor = StateObject(wrappedValue: m)
         _allowlist = StateObject(wrappedValue: allowlistStore)
         _settings = StateObject(wrappedValue: appSettings)

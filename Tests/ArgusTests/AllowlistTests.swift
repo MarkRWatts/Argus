@@ -68,4 +68,28 @@ final class AllowlistStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.entries.count, 1)
         XCTAssertTrue(reloaded.isAllowed(ruleName: "A", executable: "osascript"))
     }
+
+    func testStoreWiredWithIntegrityGuardRecordsMACOnSave() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("allowlist.json")
+
+        let fixedKeyGuard = IntegrityGuard(
+            keyProvider: FixedKeyProviderForAllowlistTests(data: Data(repeating: 0x22, count: 32)),
+            sidecarURL: dir.appendingPathComponent("integrity.json")
+        )
+
+        let store = AllowlistStore(fileURL: url, integrityGuard: fixedKeyGuard)
+        // No allowlist.json exists yet — nothing has been authenticated, nothing to verify.
+        XCTAssertEqual(store.integrityVerdict, .unverifiable)
+
+        store.allow(ruleName: "A", executable: "osascript")
+        XCTAssertEqual(fixedKeyGuard.verify(url), .verified, "save() should have recorded a MAC via the injected guard")
+    }
+}
+
+/// Fixed-key provider so this test doesn't touch the real Keychain.
+private struct FixedKeyProviderForAllowlistTests: IntegrityKeyProvider {
+    let data: Data?
+    func key() -> Data? { data }
 }
