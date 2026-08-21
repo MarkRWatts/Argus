@@ -524,19 +524,20 @@ struct EventRow: View {
     /// "via claude"-style chip surfacing `ProcessEvent.provenance` — capped
     /// to the first two labels so a deep, multi-supervisor ancestry (e.g.
     /// Claude inside a terminal inside tmux) doesn't crowd out the rule
-    /// chips it sits beside. Deliberately dimmer than the technique/severity
-    /// chips: this is context for triage, not a signal of its own — see
+    /// chips it sits beside. Rendered in `Theme.provenance` (violet, a hue
+    /// the severity palette never uses) so attribution is easy to spot at a
+    /// glance yet can't be mistaken for a severity signal — see
     /// `ProvenanceTag`'s doc comment.
     private var provenanceBadge: some View {
         HStack(spacing: 3) {
             Image(systemName: "arrowshape.turn.up.left")
-                .font(.system(size: 7))
+                .font(.system(size: 8, weight: .semibold))
             Text("via \(event.provenance.prefix(2).joined(separator: ", "))")
-                .font(.system(size: 9))
+                .font(.system(size: 9, weight: .semibold))
         }
-        .foregroundStyle(Theme.dim)
+        .foregroundStyle(Theme.provenance)
         .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(Theme.surfaceRaised)
+        .background(Theme.provenance.opacity(0.14))
         .clipShape(Capsule())
         .help("Ancestry attribution, not authorization — process ancestry can be spoofed; this is triage context only.")
     }
@@ -832,15 +833,16 @@ private struct AllowlistRow: View {
         }
     }
 
-    /// Dim "only under <label>" chip, styled like `EventRow.provenanceBadge`
-    /// so the scope reads as the same kind of attribution context there and
-    /// here rather than a second, inconsistent visual language.
+    /// "only under <label>" chip, styled like `EventRow.provenanceBadge`
+    /// (same `Theme.provenance` violet) so the scope reads as the same kind
+    /// of attribution context there and here rather than a second,
+    /// inconsistent visual language.
     private func scopeChip(_ label: String) -> some View {
         Text("only under \(label)")
             .font(.system(size: 8.5, weight: .medium))
-            .foregroundStyle(Theme.dim)
+            .foregroundStyle(Theme.provenance)
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(Theme.surfaceRaised)
+            .background(Theme.provenance.opacity(0.14))
             .clipShape(Capsule())
     }
 }

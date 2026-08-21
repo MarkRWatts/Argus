@@ -21,6 +21,11 @@ enum Theme {
     static let muted = Color(hex: 0x7c8ba0)
     static let dim = Color(hex: 0x4a5768)
     static let accent = Color(hex: 0xff9d4d)
+    /// Provenance ("via claude") chips. Deliberately violet — a hue the
+    /// severity palette (green/yellow/amber/red) never uses, so an
+    /// attribution chip can be prominent without ever being mistaken for a
+    /// severity signal.
+    static let provenance = Color(hex: 0xa98bfa)
 
     static func color(for severity: Severity) -> Color {
         switch severity {
