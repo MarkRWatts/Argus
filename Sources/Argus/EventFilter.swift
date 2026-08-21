@@ -24,6 +24,7 @@ enum EventFilter {
             if event.rules.contains(where: {
                 $0.name.lowercased().contains(trimmed) || $0.technique.lowercased().contains(trimmed)
             }) { return true }
+            if event.provenance.contains(where: { $0.lowercased().contains(trimmed) }) { return true }
             return false
         }
     }

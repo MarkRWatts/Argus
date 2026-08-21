@@ -331,7 +331,7 @@ struct DashboardView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.dim)
-                TextField("Search executable, command, or technique…", text: $searchText)
+                TextField("Search executable, command, technique, or supervisor…", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(Theme.mono(11))
                 if !searchText.isEmpty {
@@ -450,6 +450,10 @@ struct EventRow: View {
                 .buttonStyle(.plain)
                 .help("Show every event sharing this process's parent (pid \(event.ppid))")
 
+                if !event.provenance.isEmpty {
+                    provenanceBadge
+                }
+
                 Spacer()
                 ForEach(event.rules.prefix(expanded ? event.rules.count : 1)) { rule in
                     Text(rule.technique)
@@ -505,6 +509,26 @@ struct EventRow: View {
                 NSPasteboard.general.setString(json, forType: .string)
             }
         }
+    }
+
+    /// "via claude"-style chip surfacing `ProcessEvent.provenance` — capped
+    /// to the first two labels so a deep, multi-supervisor ancestry (e.g.
+    /// Claude inside a terminal inside tmux) doesn't crowd out the rule
+    /// chips it sits beside. Deliberately dimmer than the technique/severity
+    /// chips: this is context for triage, not a signal of its own — see
+    /// `ProvenanceTag`'s doc comment.
+    private var provenanceBadge: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "arrowshape.turn.up.left")
+                .font(.system(size: 7))
+            Text("via \(event.provenance.prefix(2).joined(separator: ", "))")
+                .font(.system(size: 9))
+        }
+        .foregroundStyle(Theme.dim)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Theme.surfaceRaised)
+        .clipShape(Capsule())
+        .help("Ancestry attribution, not authorization — process ancestry can be spoofed; this is triage context only.")
     }
 }
 
