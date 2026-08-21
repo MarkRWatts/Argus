@@ -19,16 +19,19 @@ final class RuleStore: ObservableObject {
     /// by an authenticated write, computed once at init. See `IntegrityGuard`
     /// — the app checks this after construction to decide whether to report
     /// a tamper event; the store itself doesn't emit events.
-    private(set) var integrityVerdict: IntegrityVerdict
+    private(set) var integrityVerdict: IntegrityVerdict?
 
     private let bundledRulesDirectory: URL?
     let userRulesDirectory: URL
     let stateFileURL: URL
-    private let integrityGuard: IntegrityGuard
+    /// Optional so that constructing a store (in tests, previews, tools)
+    /// never touches the real Keychain or the shared sidecar as a side
+    /// effect — the app opts in explicitly with `.shared`.
+    private let integrityGuard: IntegrityGuard?
 
     var activeRules: [SigmaRule] { rules.filter { !disabledRuleIDs.contains($0.id) } }
 
-    init(bundledRulesDirectory: URL? = nil, userRulesDirectory: URL? = nil, stateFileURL: URL? = nil, integrityGuard: IntegrityGuard = .shared) {
+    init(bundledRulesDirectory: URL? = nil, userRulesDirectory: URL? = nil, stateFileURL: URL? = nil, integrityGuard: IntegrityGuard? = nil) {
         let appSupport = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Argus", isDirectory: true)
         self.bundledRulesDirectory = bundledRulesDirectory ?? Bundle.main.resourceURL?.appendingPathComponent("Rules", isDirectory: true)
@@ -39,7 +42,7 @@ final class RuleStore: ObservableObject {
         // Keep the shared Argus support directory owner-only (see EventStore).
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupport.path)
 
-        integrityVerdict = integrityGuard.verify(self.stateFileURL)
+        integrityVerdict = integrityGuard?.verify(self.stateFileURL)
         loadDisabledState()
         reload()
     }
@@ -153,6 +156,6 @@ final class RuleStore: ObservableObject {
     private func saveDisabledState() {
         guard let data = try? JSONEncoder().encode(disabledRuleIDs) else { return }
         try? data.write(to: stateFileURL, options: .atomic)
-        integrityGuard.recordAuthenticatedWrite(of: stateFileURL)
+        integrityGuard?.recordAuthenticatedWrite(of: stateFileURL)
     }
 }

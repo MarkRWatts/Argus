@@ -109,9 +109,12 @@ struct KeychainIntegrityKeyProvider: IntegrityKeyProvider {
 }
 
 /// See the type-level rationale above (evidence, not prevention). Owns one
-/// sidecar file mapping guarded filenames to a hex HMAC-SHA256 of their last
-/// authenticated contents, so a single guard instance can cover multiple
-/// files (`rules-state.json`, `allowlist.json`, ...).
+/// sidecar file mapping guarded files' full paths to a hex HMAC-SHA256 of
+/// their last authenticated contents, so a single guard instance can cover
+/// multiple files (`rules-state.json`, `allowlist.json`, ...). Keyed by full
+/// path, not filename — a store pointed at a same-named file elsewhere (a
+/// test's temp copy, a second profile) must never collide with the real
+/// file's recorded MAC.
 final class IntegrityGuard {
     private let keyProvider: IntegrityKeyProvider
     private let sidecarURL: URL
@@ -150,7 +153,7 @@ final class IntegrityGuard {
             return
         }
         var sidecar = loadSidecar()
-        sidecar[fileURL.lastPathComponent] = mac
+        sidecar[fileURL.path] = mac
         saveSidecar(sidecar)
     }
 
@@ -175,15 +178,15 @@ final class IntegrityGuard {
         }
 
         var sidecar = loadSidecar()
-        guard let recordedMAC = sidecar[fileURL.lastPathComponent] else {
-            sidecar[fileURL.lastPathComponent] = currentMAC
+        guard let recordedMAC = sidecar[fileURL.path] else {
+            sidecar[fileURL.path] = currentMAC
             saveSidecar(sidecar)
             DiagnosticsLog.write("integrity-guard: establishing baseline for \(fileURL.lastPathComponent)")
             return .baselineEstablished
         }
 
         guard recordedMAC == currentMAC else {
-            sidecar[fileURL.lastPathComponent] = currentMAC
+            sidecar[fileURL.path] = currentMAC
             saveSidecar(sidecar)
             return .tampered
         }

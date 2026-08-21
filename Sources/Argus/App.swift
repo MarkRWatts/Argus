@@ -56,9 +56,9 @@ struct ArgusApp: App {
     /// shown. Doing it here, in the app's own init, means it starts at
     /// launch every time.
     init() {
-        let allowlistStore = AllowlistStore()
+        let allowlistStore = AllowlistStore(integrityGuard: .shared)
         let appSettings = AppSettings()
-        let rules = RuleStore()
+        let rules = RuleStore(integrityGuard: .shared)
         let events = EventStore()
 
         let m = ProcessMonitor()

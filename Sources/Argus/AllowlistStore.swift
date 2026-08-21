@@ -26,12 +26,15 @@ final class AllowlistStore: ObservableObject {
     /// an authenticated write, computed once at init. See `IntegrityGuard` —
     /// the app checks this after construction to decide whether to report a
     /// tamper event; the store itself doesn't emit events.
-    private(set) var integrityVerdict: IntegrityVerdict
+    private(set) var integrityVerdict: IntegrityVerdict?
 
     let fileURL: URL
-    private let integrityGuard: IntegrityGuard
+    /// Optional so that constructing a store (in tests, previews, tools)
+    /// never touches the real Keychain or the shared sidecar as a side
+    /// effect — the app opts in explicitly with `.shared`.
+    private let integrityGuard: IntegrityGuard?
 
-    init(fileURL: URL? = nil, integrityGuard: IntegrityGuard = .shared) {
+    init(fileURL: URL? = nil, integrityGuard: IntegrityGuard? = nil) {
         if let fileURL {
             self.fileURL = fileURL
         } else {
@@ -43,7 +46,7 @@ final class AllowlistStore: ObservableObject {
             self.fileURL = dir.appendingPathComponent("allowlist.json")
         }
         self.integrityGuard = integrityGuard
-        integrityVerdict = integrityGuard.verify(self.fileURL)
+        integrityVerdict = integrityGuard?.verify(self.fileURL)
         load()
     }
 
@@ -110,7 +113,7 @@ final class AllowlistStore: ObservableObject {
     private func save() {
         guard let data = try? JSONEncoder().encode(entries) else { return }
         try? data.write(to: fileURL, options: .atomic)
-        integrityGuard.recordAuthenticatedWrite(of: fileURL)
+        integrityGuard?.recordAuthenticatedWrite(of: fileURL)
     }
 }
 
