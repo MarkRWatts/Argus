@@ -132,6 +132,28 @@ is surfaced as a critical "Detection state modified outside Argus" event (T1562.
 so the tamper itself becomes visible in the feed. This is evidence, not prevention — a same-user attacker can still rewrite the files, but no longer
 silently.
 
+### Provenance attribution
+
+Every matched event's process ancestry is classified against a table of known supervisors:
+AI coding agents (`claude`), container tooling (`docker`), package managers (`brew`),
+terminals (`Terminal`/`iTerm2`/`tmux`), and IDEs (`VS Code`/`Cursor`). When a supervisor
+is found in the ancestry, a dim "via claude"-style chip appears on the event row in the
+feed and matches in the search field too. Rules can also match the raw ancestry via new
+`AncestorImages` and `AncestorCommandLines` fields — semicolon-joined, nearest first —
+for precise correlation.
+
+This is attribution for triage and visibility, not authorization. Ancestry is spoofable,
+so tags never grant implicit trust. The only sanctioned uses are explicit, user-visible
+mechanisms: the provenance-scoped allowlists (described below) and notification quieting,
+both user-chosen. When an event's process ancestry indicates it ran under an attributed
+supervisor and matches certain sensitive technique categories (persistence T1543/T1547/T1053,
+credential access T1555/T1552/T1539, defense evasion T1562/T1553), an escalation rule fires
+("AI agent session touched a sensitive technique") one severity level above the underlying
+matches, capped at critical — because a prompt-injected agent session doing persistence is
+exactly how that compromise presents. Routine agent-attributed events can have their
+*notifications* quieted via a default-on Settings toggle; the feed, history, risk score,
+and log remain unaffected, and a counter in Settings shows how many were quieted.
+
 ## Rule format and management
 
 Rules are [Sigma](https://github.com/SigmaHQ/sigma) — the open, vendor-
@@ -154,7 +176,7 @@ spec, not just CommandLine. Rules whose `logsource` is incompatible
 are skipped at load time; a count is shown in the rule browser
 alongside the rule count in the header.
 
-**85 rules ship with the app**, sourced from three places:
+**86 rules ship with the app**, sourced from three places:
 
 - **67 rules** imported verbatim from `SigmaHQ/sigma`'s `rules/macos/process_creation/` —
   a real, actively-maintained community ruleset (account/SIP/security-tool
@@ -164,10 +186,15 @@ alongside the rule count in the header.
   set — genuinely portable shell/interpreter techniques (netcat/perl/php/
   python/ruby reverse shells, base64 pipe-to-shell) that apply unchanged on
   macOS, since it's the same shell tooling.
-- **10 rules** authored for Argus, filling gaps neither imported set covered
+- **11 rules** authored for Argus, filling gaps neither imported set covered
   (TCC.db tampering, browser cookie/session theft, pipe-to-interpreter
   fetch-and-execute, credential piping to `sudo -S`, AMFI/code-signing
-  tampering, and others).
+  tampering, and quarantine attribute removal). A new rule "Gatekeeper Bypass
+  via Quarantine Attribute Removal" matches only actual quarantine *removal*
+  via whitespace-bounded `-d` or `-c` flags, superseding an imported SigmaHQ
+  catch-all that also fired on Homebrew's safe `xattr -w` quarantine-adds.
+  Superseded imported rules are auto-disabled at launch and recorded persistently,
+  so a user's deliberate Touch ID re-enable is never overwritten on reload.
 
 See `Resources/Rules/NOTICE.md` for full attribution and license details
 (SigmaHQ's rules are DRL 1.1; imported files are unmodified).
@@ -194,7 +221,13 @@ If a rule fires on something you know is your own legitimate automation,
 right-click the event in the feed and choose "Allow future … alerts from
 …". This suppresses that specific (rule, executable) pair going forward —
 allowlisting one automation's use of `osascript` won't blind Argus to a
-*different* technique that happens to also involve `osascript`. Review or
+*different* technique that happens to also involve `osascript`. The right-click
+menu also now offers "Allow only when under <label>" for each supervisor
+attributed to the event's ancestry — e.g. suppressing a rule for `zsh` only
+when the tree runs under `claude`, so the same rule still fires for any other
+`zsh`. Scoped entries show their scope in the allowlist panel. Unconditional
+allowlist entries subsume scoped ones, so an unscoped allowlist for a pair
+will shadow any scoped entries for that same (rule, executable). Review or
 revoke allowlist entries from the "ALLOWLISTED" counter in the header.
 Nothing is suppressed silently: the header also shows a running count of
 events an allowlist rule has hidden.
@@ -248,19 +281,21 @@ sidecar records HMAC-SHA256 MACs of the security-relevant JSON files
 swift test
 ```
 
-119 tests. The Sigma engine is validated two ways: `SigmaEngineTests` checks
+170 tests. The Sigma engine is validated two ways: `SigmaEngineTests` checks
 the YAML parser, condition evaluator, and matcher against real rule text
 fetched from SigmaHQ (including the `N of selection_*` quantifier, `base64`/
 `base64offset`/`cased` modifiers, and keyword matching), and `BundledRulesTests`
-loads all 85 shipped rule files, asserts structural invariants, and — for the
-10 Argus-authored rules — verifies they match what they claim to. Also
+loads all 86 shipped rule files, asserts structural invariants, and — for the
+11 Argus-authored rules — verifies they match what they claim to. Also
 covered: `RuleStoreTests` (enable/disable persistence, user-rule loading),
 `ProcessMonitorTests` (parent-context caching, sampling health tracking),
 `AllowlistTests`, `EventStoreTests`, `EventFilterTests`, `HistoryStatsTests`,
 `AppSettingsTests`, `EventExportTests` (JSON and CSV serialization),
 `ChainCorrelatorTests` (sequence detection), `PersistenceWatcherTests`
-(artifact diffing and event generation), and `IntegrityGuardTests` (MAC
-recording and verification).
+(artifact diffing and event generation), `IntegrityGuardTests` (MAC
+recording and verification), `ProvenanceClassifierTests` (ancestry classification),
+and `AgentActivityPolicyTests` (agent-attributed event escalation and notification
+quieting).
 
 ## Project layout
 
@@ -278,10 +313,12 @@ Sources/Argus/
     RuleStore.swift                loads bundled + user rules, enable/disable, skip count
   ProcessMonitor.swift          ps polling, diffing, risk-score decay, Sigma matching,
                                   cross-tick parent cache, sampling watchdog
+  ProvenanceClassifier.swift     classifies process ancestry against supervisor table
+  AgentActivityPolicy.swift      escalation and notification quieting for agent-attributed events
   ChainCorrelator.swift         correlates techniques in same process tree (10-min window)
   PersistenceWatcher.swift      event-driven monitoring of LaunchAgents/Daemons/periodic
   IntegrityGuard.swift          HMAC verification of rules-state.json and allowlist.json
-  AllowlistStore.swift          persisted (rule, executable) suppression
+  AllowlistStore.swift          persisted (rule, executable, provenance scope) suppression
   EventStore.swift              persisted event history (events.jsonl)
   EventFilter.swift             search/severity/session filter logic
   EventExport.swift             JSON and RFC 4180-quoted CSV serialization
@@ -298,7 +335,7 @@ Sources/Argus/
   MenuBarPanel.swift            compact menu-bar popover
 Tests/ArgusTests/
   SigmaEngineTests.swift         parser/condition/matcher vs. real SigmaHQ rule text
-  BundledRulesTests.swift        all 85 shipped rules load + custom-rule fixtures
+  BundledRulesTests.swift        all 86 shipped rules load + custom-rule fixtures
   RuleStoreTests.swift           enable/disable persistence, user-rule loading
   AllowlistTests.swift           filter logic + persistence round-trip
   EventStoreTests.swift          history persistence + trimming
@@ -307,6 +344,8 @@ Tests/ArgusTests/
   HistoryStatsTests.swift        day-bucketing + technique-frequency aggregation
   AppSettingsTests.swift         settings persistence/clamping + notification-threshold logic
   ProcessMonitorTests.swift      parent-context caching, health tracking
+  ProvenanceClassifierTests.swift ancestry classification against supervisor table
+  AgentActivityPolicyTests.swift  escalation rules and notification quieting logic
   ChainCorrelatorTests.swift     sequence detection in process trees
   PersistenceWatcherTests.swift  artifact diffing and event generation
   IntegrityGuardTests.swift      MAC recording and verification
@@ -318,7 +357,7 @@ Resources/
     SIGMA_LICENSE.txt             SigmaHQ/sigma's license file
     imported/                     67 rules verbatim from SigmaHQ macOS process_creation
     imported-portable/            8 rules verbatim from SigmaHQ Linux process_creation (portable shell techniques)
-    custom/                       10 rules authored for Argus, filling gaps in the imported sets
+    custom/                       11 rules authored for Argus, filling gaps in the imported sets
 scripts/
   build_app.sh                  release build → signed .app bundle (bundles Resources/Rules)
   sync_sigma_rules.sh           manual dev tool to refresh bundled SigmaHQ rules from upstream
