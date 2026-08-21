@@ -1,6 +1,91 @@
 import Foundation
 import Combine
 
+/// Caches pid → image/command/user across polling ticks so a newly-spawned
+/// child's ParentImage/ParentCommandLine/ParentUser can still be resolved
+/// after the parent has already exited by the next poll — a common race:
+/// many LOLBin chains spawn a short-lived parent (e.g. a one-shot `sh -c`)
+/// that's gone from the process table before the ~1.2s sample interval
+/// elapses. Without this cache those Sigma rules that key off parent
+/// context would silently never match such chains.
+///
+/// The current sample's entries always overwrite older ones. Entries for
+/// pids no longer present in the sample are kept for `retentionTicks` more
+/// ticks (default 3, ~30s at the default poll interval) and then dropped —
+/// pruning matters because macOS recycles pids; without it, a new,
+/// unrelated process could inherit a long-dead process's stale identity as
+/// its "parent".
+struct ParentContextCache {
+    struct Entry {
+        var image: String
+        var command: String
+        var user: String
+        var lastSeenTick: Int
+    }
+
+    private(set) var entries: [Int32: Entry] = [:]
+    let retentionTicks: Int
+
+    init(retentionTicks: Int = 3) {
+        self.retentionTicks = retentionTicks
+    }
+
+    /// Merges the current sample into the cache and prunes anything not
+    /// refreshed within the retention window.
+    mutating func update(with sample: [RawProcess], tick: Int) {
+        for p in sample {
+            entries[p.id] = Entry(image: p.image, command: p.command, user: p.user, lastSeenTick: tick)
+        }
+        entries = entries.filter { tick - $0.value.lastSeenTick <= retentionTicks }
+    }
+
+    func image(for pid: Int32) -> String? { entries[pid]?.image }
+    func command(for pid: Int32) -> String? { entries[pid]?.command }
+    func user(for pid: Int32) -> String? { entries[pid]?.user }
+}
+
+/// Why a `ps` sample didn't yield a usable process list.
+enum SampleFailure: Error {
+    case launchFailed
+    case timeout
+    case decodeFailed
+}
+
+/// Tracks consecutive sampling failures and reports edge-triggered
+/// transitions into/out of the "degraded" state. Isolated from the actor and
+/// from `Process` so the threshold logic can be driven directly in tests
+/// without spawning `ps`.
+struct SamplingHealthTracker {
+    enum Transition { case none, becameDegraded, recovered }
+
+    private(set) var consecutiveFailures = 0
+    private(set) var isDegraded = false
+    let threshold: Int
+
+    init(threshold: Int = 3) {
+        self.threshold = threshold
+    }
+
+    /// Only the tick where the failure streak *reaches* the threshold
+    /// reports `.becameDegraded` — later failures in the same streak report
+    /// `.none` so callers log the transition once, not on every failure.
+    mutating func recordFailure() -> Transition {
+        consecutiveFailures += 1
+        if consecutiveFailures == threshold {
+            isDegraded = true
+            return .becameDegraded
+        }
+        return .none
+    }
+
+    mutating func recordSuccess() -> Transition {
+        let wasDegraded = isDegraded
+        consecutiveFailures = 0
+        isDegraded = false
+        return wasDegraded ? .recovered : .none
+    }
+}
+
 /// Polls the local process table, diffs it against the previous sample to find
 /// newly-spawned processes, and runs each one through the active Sigma rules.
 ///
@@ -20,6 +105,10 @@ final class ProcessMonitor: ObservableObject {
     @Published private(set) var suppressedCount: Int = 0
     @Published private(set) var historicalEventCount: Int = 0
     @Published private(set) var activityLog: [(Date, Int)] = [] // (time, matched-event count) per tick, for the sparkline
+    /// True once sampling has failed `samplingHealth.threshold` times in a row.
+    /// A hung or missing `/bin/ps` must not be silently mistaken for "no
+    /// processes running" — this is the signal the UI can surface instead.
+    @Published private(set) var isDegraded: Bool = false
 
     var riskLevel: Severity {
         switch riskScore {
@@ -40,6 +129,10 @@ final class ProcessMonitor: ObservableObject {
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private let defaultIntervalSeconds: Double = 1.2
     private let defaultHalfLifeSeconds: Double = 55.0
+
+    private var parentCache = ParentContextCache()
+    private var tickIndex = 0
+    private var samplingHealth = SamplingHealthTracker()
 
     func configure(allowlist: AllowlistStore) {
         self.allowlist = allowlist
@@ -83,8 +176,31 @@ final class ProcessMonitor: ObservableObject {
     }
 
     private func tick() async {
-        let raw = await Self.sampleProcesses()
+        let result = await Self.sampleProcesses()
         sampleCount += 1
+
+        switch result {
+        case .failure(let failure):
+            let transition = samplingHealth.recordFailure()
+            isDegraded = samplingHealth.isDegraded
+            if transition == .becameDegraded {
+                DiagnosticsLog.write("monitor degraded — \(samplingHealth.consecutiveFailures) consecutive sampling failures (\(failure))")
+            }
+            // A failed sample is not "every process exited" — knownPIDs, the
+            // baseline, and this tick's diff are all left untouched so the
+            // next successful sample resumes from the real prior state.
+            return
+        case .success(let raw):
+            let transition = samplingHealth.recordSuccess()
+            isDegraded = samplingHealth.isDegraded
+            if transition == .recovered {
+                DiagnosticsLog.write("monitor recovered — sampling succeeded")
+            }
+            processSample(raw)
+        }
+    }
+
+    private func processSample(_ raw: [RawProcess]) {
         let halfLife = settings?.riskDecayHalfLifeSeconds ?? defaultHalfLifeSeconds
         let decayFactor = pow(0.5, currentPollInterval / halfLife)
         riskScore = max(0, riskScore * decayFactor)
@@ -92,6 +208,9 @@ final class ProcessMonitor: ObservableObject {
 
         let currentPIDs = Set(raw.map(\.id))
         defer { knownPIDs = currentPIDs }
+
+        parentCache.update(with: raw, tick: tickIndex)
+        tickIndex += 1
 
         guard baselined else {
             baselined = true
@@ -105,24 +224,15 @@ final class ProcessMonitor: ObservableObject {
             !knownPIDs.contains($0.id) && $0.id != ownPID && $0.ppid != ownPID
         }
 
-        // Full-sample lookup so a new process's ParentImage/ParentCommandLine
-        // can be resolved — several real Sigma rules key off parent context
-        // (e.g. "curl spawned by bash" is far more specific than "curl" alone).
-        var imageByPID: [Int32: String] = [:]
-        var commandByPID: [Int32: String] = [:]
-        for p in raw {
-            imageByPID[p.id] = p.image
-            commandByPID[p.id] = p.command
-        }
-
         let activeRules = ruleStore?.activeRules ?? []
         var matchedThisTick = 0
         for proc in newProcs {
             totalSeen += 1
 
-            var record: [String: String] = ["CommandLine": proc.command, "Image": proc.image]
-            if let parentImage = imageByPID[proc.ppid] { record["ParentImage"] = parentImage }
-            if let parentCommand = commandByPID[proc.ppid] { record["ParentCommandLine"] = parentCommand }
+            var record: [String: String] = ["CommandLine": proc.command, "Image": proc.image, "User": proc.user]
+            if let parentImage = parentCache.image(for: proc.ppid) { record["ParentImage"] = parentImage }
+            if let parentCommand = parentCache.command(for: proc.ppid) { record["ParentCommandLine"] = parentCommand }
+            if let parentUser = parentCache.user(for: proc.ppid) { record["ParentUser"] = parentUser }
 
             let rawMatches: [MatchedRule] = activeRules.compactMap { rule in
                 guard SigmaMatcher.matches(rule, record: record) else { return nil }
@@ -181,7 +291,7 @@ final class ProcessMonitor: ObservableObject {
         orbitNodes.removeAll { $0.bornAt < cutoff }
     }
 
-    nonisolated private static func sampleProcesses() async -> [RawProcess] {
+    nonisolated private static func sampleProcesses() async -> Result<[RawProcess], SampleFailure> {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .utility).async {
                 cont.resume(returning: runPS())
@@ -189,33 +299,71 @@ final class ProcessMonitor: ObservableObject {
         }
     }
 
-    nonisolated private static func runPS() -> [RawProcess] {
+    /// Hard ceiling on how long a single `ps` invocation may run. Without
+    /// this, a wedged `/bin/ps` (seen in practice on macOS under heavy I/O
+    /// contention) blocks `readDataToEndOfFile()` forever, silently freezing
+    /// the entire poll loop with no error and no indication anything is wrong.
+    nonisolated private static let samplingTimeoutSeconds: Double = 10
+
+    nonisolated private static func runPS() -> Result<[RawProcess], SampleFailure> {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axww", "-o", "pid,ppid,command"]
+        process.arguments = ["-axww", "-o", "pid,ppid,user,command"]
         let outPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = Pipe()
         do {
             try process.run()
         } catch {
-            return []
+            return .failure(.launchFailed)
         }
+
+        // Watchdog: kill `ps` if it hasn't finished by the deadline, so the
+        // blocking read below is bounded no matter what `ps` does.
+        let watchdog = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + samplingTimeoutSeconds, execute: watchdog)
+
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        watchdog.cancel()
 
+        if process.terminationReason == .uncaughtSignal {
+            return .failure(.timeout)
+        }
+        guard let output = String(data: data, encoding: .utf8) else { return .failure(.decodeFailed) }
+        return .success(parsePSOutput(output))
+    }
+
+    /// Parses `ps -axww -o pid,ppid,user,command` output into `RawProcess`
+    /// records. Pure and side-effect free so it can be exercised directly in
+    /// tests without spawning `ps`.
+    ///
+    /// Tolerant of malformed rows: the header line and any line that doesn't
+    /// split into the expected four columns (or whose pid/ppid aren't
+    /// integers) is skipped rather than aborting the whole sample — one odd
+    /// row from `ps` shouldn't blind the monitor to every other process
+    /// running at the same time.
+    nonisolated static func parsePSOutput(_ output: String) -> [RawProcess] {
         var results: [RawProcess] = []
         let lines = output.split(separator: "\n", omittingEmptySubsequences: true)
         for line in lines.dropFirst() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-            guard parts.count == 3, let pid = Int32(parts[0]), let ppid = Int32(parts[1]) else { continue }
-            let command = String(parts[2])
+            let parts = trimmed.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+            guard parts.count == 4, let pid = Int32(parts[0]), let ppid = Int32(parts[1]) else { continue }
+            let user = String(parts[2])
+            // `USER` is left-justified and padded to a fixed column width by
+            // `ps`, so the run of spaces separating it from `COMMAND` is
+            // often more than one character. `split(maxSplits:)` only
+            // collapses a whitespace run when it's not the final split, so
+            // that padding can survive as leading whitespace on this last
+            // component — trim it rather than let it corrupt Image/CommandLine.
+            let command = String(parts[3]).trimmingCharacters(in: .whitespaces)
             let firstToken = command.split(separator: " ").first.map(String.init) ?? command
             let short = (firstToken as NSString).lastPathComponent
             let image = firstToken.contains("/") ? firstToken : "/" + firstToken
-            results.append(RawProcess(id: pid, ppid: ppid, command: command, executable: short, image: image))
+            results.append(RawProcess(id: pid, ppid: ppid, command: command, executable: short, image: image, user: user))
         }
         return results
     }
