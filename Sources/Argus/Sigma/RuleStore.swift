@@ -11,6 +11,10 @@ import Foundation
 final class RuleStore: ObservableObject {
     @Published private(set) var rules: [SigmaRule] = []
     @Published private(set) var disabledRuleIDs: Set<String> = []
+    /// Rules dropped at load time because their `logsource` isn't something
+    /// this app can actually evaluate (see `isCompatibleLogsource`) — e.g. a
+    /// Windows-only rule dropped into the user rules folder by mistake.
+    @Published private(set) var skippedIncompatibleCount: Int = 0
 
     private let bundledRulesDirectory: URL?
     let userRulesDirectory: URL
@@ -34,13 +38,23 @@ final class RuleStore: ObservableObject {
 
     func reload() {
         var loaded: [SigmaRule] = []
+        var skipped = 0
         if let bundledRulesDirectory {
-            loaded += Self.loadRules(from: bundledRulesDirectory.appendingPathComponent("imported"), origin: .sigmaHQMacOS)
-            loaded += Self.loadRules(from: bundledRulesDirectory.appendingPathComponent("imported-portable"), origin: .sigmaHQPortable)
-            loaded += Self.loadRules(from: bundledRulesDirectory.appendingPathComponent("custom"), origin: .custom)
+            for (directory, origin) in [
+                (bundledRulesDirectory.appendingPathComponent("imported"), RuleOrigin.sigmaHQMacOS),
+                (bundledRulesDirectory.appendingPathComponent("imported-portable"), RuleOrigin.sigmaHQPortable),
+                (bundledRulesDirectory.appendingPathComponent("custom"), RuleOrigin.custom),
+            ] {
+                let (loadedRules, skippedCount) = Self.loadRules(from: directory, origin: origin)
+                loaded += loadedRules
+                skipped += skippedCount
+            }
         }
-        loaded += Self.loadRules(from: userRulesDirectory, origin: .user)
+        let (userRules, userSkipped) = Self.loadRules(from: userRulesDirectory, origin: .user)
+        loaded += userRules
+        skipped += userSkipped
         rules = loaded.sorted { $0.title < $1.title }
+        skippedIncompatibleCount = skipped
     }
 
     func isEnabled(_ rule: SigmaRule) -> Bool {
@@ -80,19 +94,46 @@ final class RuleStore: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([userRulesDirectory])
     }
 
-    nonisolated static func loadRules(from directory: URL, origin: RuleOrigin) -> [SigmaRule] {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
+    /// Loads every rule in `directory`, returning the rules this app can
+    /// actually evaluate alongside a count of how many were dropped for
+    /// having an incompatible `logsource` — a nonisolated static, so the
+    /// count is handed back rather than written straight to a `@MainActor`
+    /// property; `reload()` aggregates it across directories.
+    nonisolated static func loadRules(from directory: URL, origin: RuleOrigin) -> (rules: [SigmaRule], skipped: Int) {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return ([], 0) }
         var result: [SigmaRule] = []
+        var skipped = 0
         for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             guard ["yml", "yaml"].contains(file.pathExtension.lowercased()) else { continue }
             guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
             for (text, value) in YAMLParser.parseDocumentsWithSource(content) {
-                if let rule = SigmaRule.parse(value, sourceFile: file.lastPathComponent, origin: origin, rawYAML: text) {
-                    result.append(rule)
+                guard let rule = SigmaRule.parse(value, sourceFile: file.lastPathComponent, origin: origin, rawYAML: text) else { continue }
+                guard isCompatibleLogsource(product: rule.logsourceProduct, category: rule.logsourceCategory) else {
+                    skipped += 1
+                    continue
                 }
+                result.append(rule)
             }
         }
-        return result
+        return (result, skipped)
+    }
+
+    /// This app only ever samples macOS process-creation events, so a rule
+    /// is evaluable only if its `logsource.category` is unset or
+    /// `process_creation`, and its `logsource.product` is unset, `macos`,
+    /// or `linux` — `linux` because the bundled imported-portable/ rules are
+    /// genuinely portable shell/interpreter techniques that apply unchanged
+    /// on macOS (see RuleOrigin.sigmaHQPortable).
+    nonisolated private static func isCompatibleLogsource(product: String?, category: String?) -> Bool {
+        let categoryOK = category == nil || category?.lowercased() == "process_creation"
+        let productOK: Bool
+        if let product {
+            let normalized = product.lowercased()
+            productOK = normalized == "macos" || normalized == "linux"
+        } else {
+            productOK = true
+        }
+        return categoryOK && productOK
     }
 
     private func loadDisabledState() {

@@ -93,4 +93,60 @@ final class RuleStoreTests: XCTestCase {
         let mine = store.rules.first { $0.title == "My Custom Watch" }
         XCTAssertEqual(mine?.origin, .user)
     }
+
+    func testIncompatibleLogsourceRuleIsSkippedAndCounted() {
+        let (store, _, user, _) = makeStore()
+        XCTAssertEqual(store.skippedIncompatibleCount, 0, "the one bundled rule is macos/process_creation and should load cleanly")
+
+        let windowsRule = """
+        title: Windows Only Rule
+        id: 33333333-3333-3333-3333-333333333333
+        status: stable
+        author: Me
+        date: 2026-08-21
+        tags:
+            - attack.execution
+        logsource:
+            category: process_creation
+            product: windows
+        detection:
+            selection:
+                CommandLine|contains: 'powershell'
+            condition: selection
+        level: high
+        """
+        try? windowsRule.write(to: user.appendingPathComponent("windows.yml"), atomically: true, encoding: .utf8)
+        store.reload()
+
+        XCTAssertEqual(store.rules.count, 1, "the windows/process_creation rule should be skipped, not loaded")
+        XCTAssertFalse(store.rules.contains { $0.title == "Windows Only Rule" })
+        XCTAssertEqual(store.skippedIncompatibleCount, 1)
+    }
+
+    func testIncompatibleCategoryRuleIsSkippedAndCounted() {
+        let (store, _, user, _) = makeStore()
+
+        let networkRule = """
+        title: Network Connection Rule
+        id: 44444444-4444-4444-4444-444444444444
+        status: stable
+        author: Me
+        date: 2026-08-21
+        tags:
+            - attack.command-and-control
+        logsource:
+            category: network_connection
+            product: macos
+        detection:
+            selection:
+                DestinationPort: 4444
+            condition: selection
+        level: high
+        """
+        try? networkRule.write(to: user.appendingPathComponent("network.yml"), atomically: true, encoding: .utf8)
+        store.reload()
+
+        XCTAssertEqual(store.rules.count, 1, "a non-process_creation category should be skipped")
+        XCTAssertEqual(store.skippedIncompatibleCount, 1)
+    }
 }

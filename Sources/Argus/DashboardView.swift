@@ -571,6 +571,12 @@ struct RuleManagementPanel: View {
                 .font(.system(size: 10.5))
                 .foregroundStyle(Theme.accent)
             }
+
+            if ruleStore.skippedIncompatibleCount > 0 {
+                Text("\(ruleStore.skippedIncompatibleCount) rules skipped (not macOS process_creation)")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.dim)
+            }
         }
         .padding(14)
         .frame(width: 420)

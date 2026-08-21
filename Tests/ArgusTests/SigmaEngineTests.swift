@@ -109,6 +109,80 @@ final class SigmaEngineTests: XCTestCase {
     level: medium
     """
 
+    private let nOfSelections = """
+    title: Test N Of Quantifier
+    id: 55555555-5555-5555-5555-555555555555
+    status: test
+    logsource:
+        category: process_creation
+        product: macos
+    detection:
+        selection_a:
+            CommandLine|contains: 'marker-a'
+        selection_b:
+            CommandLine|contains: 'marker-b'
+        selection_c:
+            CommandLine|contains: 'marker-c'
+        condition: 2 of selection_*
+    level: medium
+    """
+
+    private let base64Marker = """
+    title: Test Base64 Modifier
+    id: 66666666-6666-6666-6666-666666666666
+    status: test
+    logsource:
+        category: process_creation
+        product: macos
+    detection:
+        selection:
+            CommandLine|base64|contains: 'malicious-payload'
+        condition: selection
+    level: medium
+    """
+
+    private let base64OffsetMarker = """
+    title: Test Base64Offset Modifier
+    id: 77777777-7777-7777-7777-777777777777
+    status: test
+    logsource:
+        category: process_creation
+        product: macos
+    detection:
+        selection:
+            CommandLine|base64offset|contains: 'malicious-payload'
+        condition: selection
+    level: medium
+    """
+
+    private let casedMarker = """
+    title: Test Cased Modifier
+    id: 88888888-8888-8888-8888-888888888888
+    status: test
+    logsource:
+        category: process_creation
+        product: macos
+    detection:
+        selection:
+            CommandLine|contains|cased: 'MaliciousCase'
+        condition: selection
+    level: medium
+    """
+
+    private let keywordMarker = """
+    title: Test Keyword All Fields
+    id: 99999999-9999-9999-9999-999999999999
+    status: test
+    logsource:
+        category: process_creation
+        product: macos
+    detection:
+        keywords:
+            - 'suspicious-marker'
+        condition: keywords
+    level: medium
+    """
+
     private func parseFirst(_ yaml: String, source: String = "test.yml") -> SigmaRule? {
         let docs = YAMLParser.parseDocuments(yaml)
         guard let first = docs.first else { return nil }
@@ -177,6 +251,93 @@ final class SigmaEngineTests: XCTestCase {
 
         let benign: [String: String] = ["ParentImage": "/bin/bash", "Image": "/usr/bin/ls", "CommandLine": "ls -la"]
         XCTAssertFalse(SigmaMatcher.matches(rule, record: benign))
+    }
+
+    // MARK: - `N of` quantifier
+
+    func testNOfQuantifierRequiresAtLeastNMatchingSelections() {
+        guard let rule = parseFirst(nOfSelections) else { return XCTFail("failed to parse") }
+
+        let onlyOne = ["CommandLine": "run marker-a only"]
+        XCTAssertFalse(SigmaMatcher.matches(rule, record: onlyOne), "1 of 3 selections true should not satisfy '2 of'")
+
+        let twoOfThree = ["CommandLine": "run marker-a and marker-b"]
+        XCTAssertTrue(SigmaMatcher.matches(rule, record: twoOfThree))
+
+        let allThree = ["CommandLine": "run marker-a marker-b marker-c"]
+        XCTAssertTrue(SigmaMatcher.matches(rule, record: allThree))
+    }
+
+    func testOneOfQuantifierStillBehavesLikeBefore() {
+        // "1 of x*" is the N=1 case of the same code path — verify it wasn't
+        // regressed by generalizing to N.
+        guard let node = SigmaConditionParser.parse("1 of selection_*") else { return XCTFail("failed to parse") }
+        XCTAssertTrue(SigmaConditionParser.evaluate(node, results: ["selection_a": false, "selection_b": true], allNames: ["selection_a", "selection_b"]))
+        XCTAssertFalse(SigmaConditionParser.evaluate(node, results: ["selection_a": false, "selection_b": false], allNames: ["selection_a", "selection_b"]))
+    }
+
+    // MARK: - base64 / base64offset modifiers
+
+    func testBase64ModifierMatchesEncodedSubstringCaseSensitively() {
+        guard let rule = parseFirst(base64Marker) else { return XCTFail("failed to parse") }
+        let encoded = Data("malicious-payload".utf8).base64EncodedString()
+
+        let matching = ["CommandLine": "echo \(encoded) | base64 -d | sh"]
+        XCTAssertTrue(SigmaMatcher.matches(rule, record: matching))
+
+        let wrongCase = ["CommandLine": "echo \(encoded.uppercased()) | base64 -d | sh"]
+        XCTAssertFalse(SigmaMatcher.matches(rule, record: wrongCase), "base64 matching is case-sensitive — must not match on case difference alone")
+
+        let unrelated = ["CommandLine": "echo aGVsbG8gd29ybGQ= | base64 -d"]
+        XCTAssertFalse(SigmaMatcher.matches(rule, record: unrelated))
+    }
+
+    func testBase64OffsetModifierMatchesRegardlessOfByteAlignment() {
+        guard let rule = parseFirst(base64OffsetMarker) else { return XCTFail("failed to parse") }
+        let value = "malicious-payload"
+
+        // Embed the value at every possible byte alignment (mod 3) within a
+        // larger encoded stream and confirm one of the three precomputed
+        // offset encodings is found regardless of where it lands.
+        for prefixLength in 0...5 {
+            let prefix = String(repeating: "X", count: prefixLength)
+            let fullyEncoded = Data((prefix + value).utf8).base64EncodedString()
+            let record = ["CommandLine": fullyEncoded]
+            XCTAssertTrue(SigmaMatcher.matches(rule, record: record), "prefix length \(prefixLength) (offset \(prefixLength % 3)) should still match")
+        }
+
+        let noPayload = ["CommandLine": Data("totally-unrelated-string".utf8).base64EncodedString()]
+        XCTAssertFalse(SigmaMatcher.matches(rule, record: noPayload))
+    }
+
+    // MARK: - `cased` modifier
+
+    func testCasedModifierRequiresExactCase() {
+        guard let rule = parseFirst(casedMarker) else { return XCTFail("failed to parse") }
+
+        let exactCase = ["CommandLine": "run --flag MaliciousCase now"]
+        XCTAssertTrue(SigmaMatcher.matches(rule, record: exactCase))
+
+        let differentCase = ["CommandLine": "run --flag maliciouscase now"]
+        XCTAssertFalse(SigmaMatcher.matches(rule, record: differentCase), "cased modifier must not fall back to lowercased comparison")
+    }
+
+    // MARK: - keyword selections match all fields
+
+    func testKeywordSelectionMatchesAnyFieldNotJustCommandLine() {
+        guard let rule = parseFirst(keywordMarker) else { return XCTFail("failed to parse") }
+
+        let inCommandLine = ["CommandLine": "run suspicious-marker now", "Image": "/usr/bin/run"]
+        XCTAssertTrue(SigmaMatcher.matches(rule, record: inCommandLine))
+
+        let inImageOnly = ["CommandLine": "run now", "Image": "/usr/bin/suspicious-marker"]
+        XCTAssertTrue(SigmaMatcher.matches(rule, record: inImageOnly), "keyword selections must search every field, not just CommandLine")
+
+        let inParentImageOnly = ["CommandLine": "run now", "Image": "/usr/bin/run", "ParentImage": "/bin/suspicious-marker"]
+        XCTAssertTrue(SigmaMatcher.matches(rule, record: inParentImageOnly))
+
+        let nowhere = ["CommandLine": "run now", "Image": "/usr/bin/run"]
+        XCTAssertFalse(SigmaMatcher.matches(rule, record: nowhere))
     }
 
     func testMultiDocumentFileParsesBothRules() {

@@ -1,14 +1,14 @@
 import Foundation
 
 /// Parser/evaluator for Sigma's `condition:` mini-language — boolean
-/// combinations of named selections, `1 of x*` / `all of x*` wildcard
-/// quantifiers, `them` (all selections), parens, and `not`. Verified
-/// against every distinct condition string appearing in the 75 rules this
-/// app ships (see SigmaConditionTests) — a real, if not 100%-of-the-spec,
-/// implementation.
+/// combinations of named selections, `N of x*` (including `1 of x*`) /
+/// `all of x*` wildcard quantifiers, `them` (all selections), parens, and
+/// `not`. Verified against every distinct condition string appearing in
+/// the 75 rules this app ships (see SigmaConditionTests) — a real, if not
+/// 100%-of-the-spec, implementation.
 indirect enum SigmaConditionNode {
     case identifier(String)
-    case oneOf(pattern: String)
+    case nOf(n: Int, pattern: String)
     case allOf(pattern: String)
     case and(SigmaConditionNode, SigmaConditionNode)
     case or(SigmaConditionNode, SigmaConditionNode)
@@ -28,8 +28,10 @@ enum SigmaConditionParser {
         switch node {
         case .identifier(let name):
             return results[name] ?? false
-        case .oneOf(let pattern):
-            return matchingNames(pattern, allNames).contains { results[$0] ?? false }
+        case .nOf(let n, let pattern):
+            let names = matchingNames(pattern, allNames)
+            let trueCount = names.filter { results[$0] ?? false }.count
+            return trueCount >= n
         case .allOf(let pattern):
             let names = matchingNames(pattern, allNames)
             return !names.isEmpty && names.allSatisfy { results[$0] ?? false }
@@ -111,10 +113,10 @@ enum SigmaConditionParser {
             pos += 1
             return node
         }
-        if tok == "1", pos + 2 < tokens.count, tokens[pos + 1].lowercased() == "of" {
+        if let n = Int(tok), n > 0, pos + 2 < tokens.count, tokens[pos + 1].lowercased() == "of" {
             let pattern = tokens[pos + 2]
             pos += 3
-            return .oneOf(pattern: pattern)
+            return .nOf(n: n, pattern: pattern)
         }
         if tok.lowercased() == "all", pos + 2 < tokens.count, tokens[pos + 1].lowercased() == "of" {
             let pattern = tokens[pos + 2]
