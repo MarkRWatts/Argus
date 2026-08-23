@@ -11,6 +11,11 @@ struct ChainMember {
     let eventID: UUID
     let pid: Int32
     let executable: String
+    /// The member's full command line, carried so the synthetic chain event
+    /// can show *what* each step actually did — for a `curl` upload that's
+    /// the URL it touched, which is the single most useful triage fact a
+    /// "curl → hdiutil → osascript" summary otherwise loses.
+    let command: String
     let ruleNames: Set<String>
     let techniques: Set<String>
     let severity: Severity
@@ -71,6 +76,7 @@ final class ChainCorrelator {
         eventID: UUID,
         pid: Int32,
         executable: String,
+        command: String,
         ruleNames: Set<String>,
         techniques: Set<String>,
         severity: Severity,
@@ -94,7 +100,7 @@ final class ChainCorrelator {
         }
 
         let newMember = ChainMember(eventID: eventID, pid: pid, executable: executable,
-                                     ruleNames: ruleNames, techniques: techniques,
+                                     command: command, ruleNames: ruleNames, techniques: techniques,
                                      severity: severity, timestamp: timestamp, lineage: lineage)
         members.append(newMember)
 

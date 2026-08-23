@@ -22,7 +22,18 @@ enum NotificationManager {
     static func requestAuthorizationIfNeeded() {
         let center = UNUserNotificationCenter.current()
         center.setNotificationCategories([actionableCategory])
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        center.requestAuthorization(options: [.alert, .sound]) { _, error in
+            if let error {
+                DiagnosticsLog.write("notification authorization request failed — \(error.localizedDescription)")
+            }
+            // The definitive granted/denied state (and its diagnostics line)
+            // comes from re-reading the settings once the request settles —
+            // that also covers the case where no prompt was shown because
+            // the user answered one for this build long ago.
+            Task { @MainActor in
+                NotificationAuthorization.shared.refresh()
+            }
+        }
     }
 
     /// "Show in Argus" brings the app forward regardless of authentication —
@@ -52,7 +63,16 @@ enum NotificationManager {
         }
 
         let request = UNNotificationRequest(identifier: event.id.uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        // The completion handler is the only place the OS reports a dropped
+        // notification (most commonly "notifications are not allowed" when
+        // authorization is denied or was reset by a signing-identity change).
+        // Swallowing it here once hid exactly that failure for every
+        // critical alert, so it goes to the diagnostics log.
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                DiagnosticsLog.write("notification delivery failed for \(event.executable) — \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Stable per-root identifier for a rollup digest notification. Reusing
@@ -90,6 +110,12 @@ enum NotificationManager {
         content.categoryIdentifier = categoryIdentifier
 
         let request = UNNotificationRequest(identifier: rollupIdentifier(rootPID: rootPID), content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        // Same rationale as `notify(event:)` — a dropped digest must not
+        // vanish without a trace in the diagnostics log.
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                DiagnosticsLog.write("notification delivery failed for pid \(rootPID) digest — \(error.localizedDescription)")
+            }
+        }
     }
 }

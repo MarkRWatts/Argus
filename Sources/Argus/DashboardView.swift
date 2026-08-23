@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ServiceManagement
 import UniformTypeIdentifiers
 
@@ -1045,6 +1046,7 @@ struct HistoryPanel: View {
 struct SettingsPanel: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var monitor: ProcessMonitor
+    @ObservedObject private var notificationAuth = NotificationAuthorization.shared
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -1089,6 +1091,22 @@ struct SettingsPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Notify me for")
                     .font(.system(size: 11, weight: .medium))
+                if let warning = notificationAuthWarning {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(warning, systemImage: "bell.slash.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.color(for: .elevated))
+                        Button("Open Notification Settings…") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .font(.system(size: 10))
+                        .buttonStyle(.link)
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.color(for: .elevated).opacity(0.12)))
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(NotificationThreshold.allCases, id: \.self) { threshold in
                         Button {
@@ -1142,6 +1160,26 @@ struct SettingsPanel: View {
         .frame(width: 300)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
+        // Re-checked on every open, not just launch: the user's most likely
+        // path to fixing a denial is flipping the toggle in System Settings
+        // and coming straight back here — the warning should clear on the
+        // next open, not on the next relaunch.
+        .onAppear { notificationAuth.refresh() }
+    }
+
+    /// Non-nil when macOS won't deliver Argus's notifications, in which case
+    /// every threshold option below the warning is a no-op — the single
+    /// failure mode that made "I never see critical alerts" undiagnosable
+    /// when it lived only in the swallowed UNUserNotificationCenter results.
+    private var notificationAuthWarning: String? {
+        switch notificationAuth.status {
+        case .denied:
+            return "macOS is blocking Argus notifications — even critical alerts are dropped. Enable Argus in System Settings → Notifications."
+        case .notDetermined:
+            return "macOS hasn't granted Argus notification permission yet — alerts won't appear until it's allowed. Rebuilds that change the app's code signature reset this."
+        case .authorized, .unknown:
+            return nil
+        }
     }
 
     /// Spells out exactly what the toggle above does and doesn't affect —

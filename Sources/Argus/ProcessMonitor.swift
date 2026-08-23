@@ -406,6 +406,7 @@ final class ProcessMonitor: ObservableObject {
 
                 if let detection = chainCorrelator.register(
                     eventID: event.id, pid: proc.id, executable: proc.executable,
+                    command: proc.command,
                     ruleNames: originalRuleNames, techniques: originalTechniques,
                     severity: event.topSeverity, timestamp: event.timestamp, ancestry: ancestors.map(\.pid)
                 ) {
@@ -461,14 +462,27 @@ final class ProcessMonitor: ObservableObject {
     /// — unlike a `PersistenceWatcher` artifact this isn't sourced from a
     /// pid-less filesystem change, it's a statement about a real process
     /// tree, so it keeps that tree's identity.
-    nonisolated private static func chainEvent(from detection: ChainDetection, pid: Int32, ppid: Int32) -> ProcessEvent {
+    ///
+    /// Each member's line carries its full command line, untruncated — for a
+    /// `curl` step that's the URL it touched, the fact that turns "three
+    /// techniques in one tree" into something actionable. This exposes
+    /// nothing the per-member events didn't already persist (their own
+    /// `command` fields hold the same lines), and members are separated by
+    /// newlines rather than "; " because command lines routinely contain
+    /// semicolons themselves. Internal rather than private so tests can
+    /// exercise the formatting without a live `ps` poll.
+    nonisolated static func chainEvent(from detection: ChainDetection, pid: Int32, ppid: Int32) -> ProcessEvent {
         let command = detection.members.map(\.executable).joined(separator: " → ")
         let technique = detection.techniques.sorted().joined(separator: ", ")
         let explanation = detection.members.map { member -> String in
             let names = member.ruleNames.sorted().joined(separator: ", ")
             let time = chainTimestampFormatter.string(from: member.timestamp)
-            return "\(member.executable) (pid \(member.pid), \(time)): \(names)"
-        }.joined(separator: "; ")
+            var line = "\(member.executable) (pid \(member.pid), \(time)): \(names)"
+            if !member.command.isEmpty {
+                line += " — \(member.command)"
+            }
+            return line
+        }.joined(separator: "\n")
 
         let rule = MatchedRule(
             name: "Suspicious sequence: \(detection.techniques.count) techniques in one process tree",
