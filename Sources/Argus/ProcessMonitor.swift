@@ -257,7 +257,12 @@ final class ProcessMonitor: ObservableObject {
     private func processSample(_ raw: [RawProcess]) {
         let halfLife = settings?.riskDecayHalfLifeSeconds ?? defaultHalfLifeSeconds
         let decayFactor = pow(0.5, currentPollInterval / halfLife)
-        riskScore = max(0, riskScore * decayFactor)
+        // Snap to exactly 0 once the gauge would display 0 anyway: pure
+        // exponential decay never reaches 0, so without this the score (and
+        // the gauge animation keyed on it) changes on every tick forever.
+        let decayed = riskScore * decayFactor
+        let nextScore = decayed < 0.5 ? 0 : decayed
+        if nextScore != riskScore { riskScore = nextScore }
         pruneOrbitNodes()
 
         let currentPIDs = Set(raw.map(\.id))

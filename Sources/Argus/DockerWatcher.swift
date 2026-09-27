@@ -282,7 +282,6 @@ final class DockerWatcher {
         do {
             try proc.run()
             process = proc
-            hasLoggedExit = false
         } catch {
             DiagnosticsLog.write("docker watcher — failed to launch docker events: \(error)")
             scheduleRetry()
@@ -292,6 +291,11 @@ final class DockerWatcher {
     private func handle(chunk: String) {
         queue.async { [weak self] in
             guard let self else { return }
+            // Output means the daemon is really connected — only now does a
+            // later exit count as a new outage worth logging. Resetting on
+            // every successful spawn instead logged once per retry forever
+            // while the daemon was down, since the CLI itself always spawns.
+            self.hasLoggedExit = false
             let lines = LineBuffer.consume(chunk, buffer: &self.lineBuffer)
             for line in lines {
                 guard let event = DockerLineProcessor.processLine(line) else { continue }
