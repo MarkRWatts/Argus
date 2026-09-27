@@ -7,6 +7,9 @@ struct MenuBarPanel: View {
     @ObservedObject var monitor: ProcessMonitor
     var dismissFlyout: () -> Void = {}
     @Environment(\.openWindow) private var openWindow
+    /// The flyout is dismissed with `orderOut(nil)`, which leaves it alive
+    /// off-screen; the gauge's animated gradient is the one costly thing in it.
+    @State private var isWindowVisible = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -35,6 +38,7 @@ struct MenuBarPanel: View {
 
             GaugeView(score: monitor.riskScore, level: monitor.riskLevel)
                 .scaleEffect(0.7)
+                .renderedOnlyWhenVisible($isWindowVisible)
                 .frame(height: 90)
 
             Divider().background(Theme.border)

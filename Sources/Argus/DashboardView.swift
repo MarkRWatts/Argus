@@ -19,6 +19,9 @@ struct DashboardView: View {
     @State private var searchText = ""
     @State private var activeSeverities: Set<Severity> = Set(Severity.allCases)
     @State private var focusedSessionPPID: Int32?
+    /// See `WindowVisibilityReader` — the dashboard window is hidden, not
+    /// destroyed, on close, and would otherwise keep rendering off-screen.
+    @State private var isWindowVisible = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,6 +44,7 @@ struct DashboardView: View {
             Divider().background(Theme.border)
             eventFeed
         }
+        .renderedOnlyWhenVisible($isWindowVisible)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
     }
