@@ -10,6 +10,7 @@ struct DashboardView: View {
     let eventStore: EventStore
     @ObservedObject var settings: AppSettings
     @ObservedObject var ruleStore: RuleStore
+    @ObservedObject var analyst: AlertAnalyst
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var uptimeStart = Date()
     @State private var showingAllowlist = false
@@ -120,7 +121,7 @@ struct DashboardView: View {
                 .buttonStyle(.plain)
                 .help("Settings — poll interval, risk decay, notifications")
                 .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
-                    SettingsPanel(settings: settings, monitor: monitor)
+                    SettingsPanel(settings: settings, monitor: monitor, analyst: analyst)
                 }
             }
         }
@@ -319,7 +320,7 @@ struct DashboardView: View {
                 ScrollView {
                     LazyVStack(spacing: 1) {
                         ForEach(filteredEvents) { event in
-                            EventRow(event: event, allowlist: allowlist) { ppid in
+                            EventRow(event: event, allowlist: allowlist, analyst: analyst) { ppid in
                                 focusedSessionPPID = ppid
                             }
                         }
@@ -421,6 +422,7 @@ struct DashboardView: View {
 struct EventRow: View {
     let event: ProcessEvent
     let allowlist: AllowlistStore
+    @ObservedObject var analyst: AlertAnalyst
     let onFocusSession: (Int32) -> Void
     @State private var expanded = false
 
@@ -489,6 +491,7 @@ struct EventRow: View {
                             .font(.system(size: 10.5))
                             .foregroundStyle(Theme.muted)
                     }
+                    analysisSection
                 }
                 .padding(.leading, 13)
                 .padding(.top, 2)
@@ -520,12 +523,80 @@ struct EventRow: View {
                 }
             }
             Divider()
+            Button("Analyse with Claude") {
+                expanded = true
+                analyst.analyse(event)
+            }
             Button("Copy as JSON") {
                 guard let json = EventExport.json(for: event) else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(json, forType: .string)
             }
         }
+    }
+
+    /// The expanded row's "Analyse" action and its result: Claude's
+    /// explanation of what the process did, which part of the command line
+    /// tripped each rule, and whether to worry. Requires an API key in
+    /// Settings; each click is one paid Messages API call.
+    @ViewBuilder
+    private var analysisSection: some View {
+        switch analyst.states[event.id] {
+        case nil:
+            Button {
+                analyst.analyse(event)
+            } label: {
+                Label("Analyse", systemImage: "sparkles")
+                    .font(.system(size: 10.5, weight: .semibold))
+            }
+            .buttonStyle(.link)
+            .padding(.top, 4)
+            .help(analyst.hasAPIKey
+                  ? "Ask Claude to explain this alert — sends the event and its matched rules to the Anthropic API"
+                  : "Add an Anthropic API key in Settings to analyse alerts")
+        case .running:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Analysing…")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.dim)
+            }
+            .padding(.top, 4)
+        case .done(let text):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("CLAUDE'S ANALYSIS", systemImage: "sparkles")
+                    .font(.system(size: 9, weight: .bold))
+                    .tracking(1)
+                    .foregroundStyle(Theme.accent)
+                Text(Self.markdown(text))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.text)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.accent.opacity(0.08)))
+            .padding(.top, 6)
+        case .failed(let message):
+            HStack(spacing: 8) {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.color(for: .elevated))
+                Button("Retry") { analyst.analyse(event) }
+                    .font(.system(size: 10.5))
+                    .buttonStyle(.link)
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    /// Inline Markdown (bold, code, links) with line breaks kept — the
+    /// system prompt asks for inline formatting only, since `Text` doesn't
+    /// render block-level Markdown.
+    private static func markdown(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
     }
 
     /// "via claude"-style chip surfacing `ProcessEvent.provenance` — capped
@@ -1050,8 +1121,10 @@ struct HistoryPanel: View {
 struct SettingsPanel: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var monitor: ProcessMonitor
+    @ObservedObject var analyst: AlertAnalyst
     @ObservedObject private var notificationAuth = NotificationAuthorization.shared
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    @State private var apiKeyDraft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1159,6 +1232,36 @@ struct SettingsPanel: View {
                     .font(.system(size: 9.5))
                     .foregroundStyle(Theme.dim)
             }
+
+            Divider().background(Theme.border)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Alert analysis")
+                    .font(.system(size: 11, weight: .medium))
+                if analyst.hasAPIKey {
+                    HStack {
+                        Label("API key saved in Keychain", systemImage: "checkmark.seal.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.accent)
+                        Spacer()
+                        Button("Remove") { analyst.removeAPIKey() }
+                            .font(.system(size: 10))
+                            .buttonStyle(.link)
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        SecureField("Anthropic API key", text: $apiKeyDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                            .onSubmit(saveAPIKey)
+                        Button("Save", action: saveAPIKey)
+                            .disabled(apiKeyDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                Text("Enables \u{201c}Analyse\u{201d} on alerts. Each click sends that event (its full command line) and its matched rules to the Anthropic API and is billed to this key.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.dim)
+            }
         }
         .padding(14)
         .frame(width: 300)
@@ -1169,6 +1272,11 @@ struct SettingsPanel: View {
         // and coming straight back here — the warning should clear on the
         // next open, not on the next relaunch.
         .onAppear { notificationAuth.refresh() }
+    }
+
+    private func saveAPIKey() {
+        analyst.saveAPIKey(apiKeyDraft)
+        apiKeyDraft = ""
     }
 
     /// Non-nil when macOS won't deliver Argus's notifications, in which case
