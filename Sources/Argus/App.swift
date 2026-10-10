@@ -33,6 +33,7 @@ struct ArgusApp: App {
     @StateObject private var allowlist: AllowlistStore
     @StateObject private var settings: AppSettings
     @StateObject private var ruleStore: RuleStore
+    @StateObject private var analyst: AlertAnalyst
     private let eventStore: EventStore
     /// Held for the app's lifetime purely to keep its `DispatchSource`s
     /// alive — `PersistenceWatcher` isn't observed by any view, so nothing
@@ -132,6 +133,7 @@ struct ArgusApp: App {
         _allowlist = StateObject(wrappedValue: allowlistStore)
         _settings = StateObject(wrappedValue: appSettings)
         _ruleStore = StateObject(wrappedValue: rules)
+        _analyst = StateObject(wrappedValue: AlertAnalyst(ruleStore: rules))
         eventStore = events
         persistenceWatcher = watcher
         dockerWatcher = dockerEventWatcher
@@ -140,7 +142,7 @@ struct ArgusApp: App {
 
     var body: some Scene {
         Window("Argus", id: Self.mainWindowID) {
-            DashboardView(monitor: monitor, allowlist: allowlist, eventStore: eventStore, settings: settings, ruleStore: ruleStore)
+            DashboardView(monitor: monitor, allowlist: allowlist, eventStore: eventStore, settings: settings, ruleStore: ruleStore, analyst: analyst)
                 .frame(minWidth: 980, minHeight: 680)
                 .preferredColorScheme(.dark)
         }
