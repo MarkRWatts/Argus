@@ -31,8 +31,10 @@ final class AlertAnalysisTests: XCTestCase {
     }
 
     func testURLRequestHeaders() {
-        let request = AlertAnalysis.urlRequest(body: Data(), apiKey: "sk-test")
+        let body = Data(#"{"model":"claude-opus-5-5"}"#.utf8)
+        let request = AlertAnalysis.urlRequest(body: body, apiKey: "sk-test")
         XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.httpBody, body)
         XCTAssertEqual(request.url, AlertAnalysis.endpoint)
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "sk-test")
         XCTAssertEqual(request.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")

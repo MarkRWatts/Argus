@@ -124,6 +124,7 @@ enum AlertAnalysis {
     static func urlRequest(body: Data, apiKey: String) -> URLRequest {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        request.httpBody = body
         // Non-streaming at high effort can take a few minutes on a long
         // command line; URLSession's 60s default would cut it off.
         request.timeoutInterval = 600
